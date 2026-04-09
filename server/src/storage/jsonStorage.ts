@@ -17,6 +17,14 @@ export function ensureDir(): void {
   }
 }
 
+/** Reject any id that is not a safe alphanumeric/hyphen/underscore string (e.g. UUID). */
+function safeId(id: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+    throw new Error(`Invalid id: ${id}`);
+  }
+  return id;
+}
+
 export function readAll<T>(subdir: string): T[] {
   const dirPath = path.join(STORAGE_PATH, subdir);
   if (!fs.existsSync(dirPath)) return [];
@@ -28,7 +36,7 @@ export function readAll<T>(subdir: string): T[] {
 }
 
 export function readOne<T>(subdir: string, id: string): T | null {
-  const filePath = path.join(STORAGE_PATH, subdir, `${id}.json`);
+  const filePath = path.join(STORAGE_PATH, subdir, `${safeId(id)}.json`);
   if (!fs.existsSync(filePath)) return null;
   const content = fs.readFileSync(filePath, 'utf-8');
   return JSON.parse(content) as T;
@@ -36,12 +44,12 @@ export function readOne<T>(subdir: string, id: string): T | null {
 
 export function writeOne(subdir: string, id: string, data: unknown): void {
   ensureDir();
-  const filePath = path.join(STORAGE_PATH, subdir, `${id}.json`);
+  const filePath = path.join(STORAGE_PATH, subdir, `${safeId(id)}.json`);
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 export function deleteOne(subdir: string, id: string): void {
-  const filePath = path.join(STORAGE_PATH, subdir, `${id}.json`);
+  const filePath = path.join(STORAGE_PATH, subdir, `${safeId(id)}.json`);
   if (fs.existsSync(filePath)) {
     fs.unlinkSync(filePath);
   }
