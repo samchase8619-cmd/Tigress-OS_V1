@@ -269,8 +269,10 @@ simulationRouter.post('/test-case', (_req: Request, res: Response) => {
   //   (>= lock*0.85 = 0.595). Even though the system is not under pressure,
   //   the target node is so constrained it blocks propagation structurally.
   //
-  //   P_raw = 0.1 - 0.62 - 0.3 - 0.325 = -1.145
-  //   P     = -1.145 * 0.8 = -0.916   (P <= 0)
+  //   Initial system.pressure = mean(n1.constraint=0.0, n2.constraint=0.62) / 2 = 0.31
+  //
+  //   P_raw = 0.1 - 0.62 - 0.3 - 0.31 = -1.13
+  //   P     = -1.13 * 0.8 = -0.90   (P <= 0)
   //   classifyFailure: target.constraint(0.62) >= lock*0.85(0.595) → propagation_failure
   //
   // AEIC discrepancy: actual constraint=0.62, perceived=0.60 (rounded to 0.05).
