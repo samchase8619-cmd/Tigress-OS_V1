@@ -231,6 +231,15 @@ export const TurnLogEntrySchema = z.object({
    *   effect     — at least one edge outcome was distortion_failure (spill/mutation)
    */
   distortion_phases: z.array(z.enum(['perception', 'targeting', 'effect'])).default([]),
+
+  /**
+   * Deterministic 0–1 score that captures how severely the AEIC is degraded
+   * this turn.  Computed from system pressure, constraint, and proximity to
+   * cascade/collapse thresholds.  Higher values mean coarser AEIC granularity,
+   * making perception and targeting distortions more likely.
+   * An instability spike (cascade fired on the PREVIOUS turn) adds +0.30.
+   */
+  distortion_intensity: z.number().min(0).max(1).default(0),
 });
 
 // ---------------------------------------------------------------------------
@@ -250,6 +259,12 @@ export const SimulationStateSchema = z.object({
   irreversible_events: z.array(IrreversibleEventSchema).default([]),
   /** Optional human-readable name for session save/load. */
   label: z.string().optional(),
+  /**
+   * True when the cascade threshold was crossed on the PREVIOUS turn.
+   * Used to apply a +0.30 instability spike to distortion_intensity on the
+   * next turn.  Reset each turn unless cascade fires again.
+   */
+  instability_spike_active: z.boolean().default(false),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

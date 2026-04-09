@@ -100,26 +100,93 @@ function computeStatus(
 // ---------------------------------------------------------------------------
 // AEIC — Actor Environmental Information Channel
 // Produces the actor's PERCEIVED view of system state.
-// Rules:
-//  - node stability: rounded to 0.1 granularity (coarse visibility)
-//  - node constraint_level: rounded to 0.05 granularity (medium visibility)
-//  - node locked: exact (binary, fully observable)
-//  - system pressure: rounded to 0.05 granularity (coarse visibility)
-//  - system recovery_capacity: NOT visible (hidden variable)
-//  - system status: exact (state transitions are broadcast)
+//
+// Base rules (low distortion intensity):
+//  - node stability: rounded to 0.1 granularity
+//  - node constraint_level: rounded to 0.05 granularity
+//  - system pressure: rounded to 0.05 granularity
+//  - system recovery_capacity: NOT visible
+//  - system status: exact
+//
+// At higher distortion_intensity the AEIC granularity degrades, making
+// perception and targeting distortions increasingly likely without any
+// random element — purely a function of system state.
 // ---------------------------------------------------------------------------
 
-function buildPerceivedNodeState(state: NodeState): PerceivedNodeState {
+// --- AEIC granularity schedules ---
+
+function constraintGranularity(intensity: number): number {
+  if (intensity < 0.3) return 0.05;   // low   — standard
+  if (intensity < 0.6) return 0.10;   // medium — coarser
+  return 0.15;                         // high   — very coarse
+}
+
+function stabilityGranularity(intensity: number): number {
+  if (intensity < 0.3) return 0.1;
+  if (intensity < 0.6) return 0.2;
+  return 0.3;
+}
+
+function pressureGranularity(intensity: number): number {
+  if (intensity < 0.3) return 0.05;
+  if (intensity < 0.6) return 0.10;
+  return 0.15;
+}
+
+/**
+ * Compute distortion intensity — a deterministic 0–1 score derived entirely
+ * from system state.  No RNG is involved.
+ *
+ *  base = pressureNorm×0.3 + thresholdProximity×0.5 + constraintNorm×0.2
+ *    where thresholdProximity ramps 0→1 from cascade×0.8 to collapse.
+ *  spike = +0.30 if cascade fired on the previous turn.
+ *
+ * Resulting ranges (approximate, cascade=0.6 / collapse=0.9 defaults):
+ *   pressure ≈ 0.10  → intensity ≈ 0.05  (mostly accurate AEIC)
+ *   pressure ≈ 0.40  → intensity ≈ 0.22  (modest degradation)
+ *   pressure ≈ 0.60  → intensity ≈ 0.48  (medium: constraint granulaity 0.10)
+ *   pressure ≈ 0.75  → intensity ≈ 0.73  (high: granularity 0.15)
+ *   + cascade spike   → clamp(above + 0.30)
+ */
+function computeDistortionIntensity(
+  sys: SystemState,
+  instabilitySpikeActive: boolean
+): number {
+  const { cascade, collapse } = sys.thresholds;
+
+  // 1. Pressure normalised against collapse threshold
+  const pressureNorm = clamp(sys.pressure / collapse);
+
+  // 2. Threshold proximity: ramps 0→1 from cascade*0.8 to collapse
+  const cascadeOnset = cascade * 0.8;
+  const proximitySpan = collapse - cascadeOnset;
+  const proximityFactor = proximitySpan > 0
+    ? clamp((sys.pressure - cascadeOnset) / proximitySpan)
+    : 0;
+
+  // 3. Constraint factor (same normalisation as pressure)
+  const constraintFactor = clamp(sys.constraint / collapse);
+
+  // 4. Weighted base
+  const base = pressureNorm * 0.3 + proximityFactor * 0.5 + constraintFactor * 0.2;
+
+  // 5. Instability spike: +0.30 if cascade fired on the previous turn
+  const spike = instabilitySpikeActive ? 0.30 : 0;
+
+  return clamp(base + spike);
+}
+
+function buildPerceivedNodeState(state: NodeState, intensity: number): PerceivedNodeState {
   return {
-    stability: round(clamp(state.stability), 0.1),
-    constraint_level: round(clamp(state.constraint_level), 0.05),
+    stability: round(clamp(state.stability), stabilityGranularity(intensity)),
+    constraint_level: round(clamp(state.constraint_level), constraintGranularity(intensity)),
     locked: state.locked,
   };
 }
 
-function buildPerceivedSystemState(sys: SystemState): PerceivedSystemState {
+function buildPerceivedSystemState(sys: SystemState, intensity: number): PerceivedSystemState {
   return {
-    pressure: round(clamp(sys.pressure), 0.05),
+    pressure: round(clamp(sys.pressure), pressureGranularity(intensity)),
     recovery_capacity_visible: false,
     status: sys.status,
   };
@@ -127,15 +194,16 @@ function buildPerceivedSystemState(sys: SystemState): PerceivedSystemState {
 
 function buildPerceivedState(
   nodeStates: Record<string, NodeState>,
-  sys: SystemState
+  sys: SystemState,
+  intensity: number
 ): TurnLogEntry['perceived_state'] {
   const perceived: Record<string, PerceivedNodeState> = {};
   for (const id of Object.keys(nodeStates)) {
-    perceived[id] = buildPerceivedNodeState(nodeStates[id]);
+    perceived[id] = buildPerceivedNodeState(nodeStates[id], intensity);
   }
   return {
     node_states: perceived,
-    system: buildPerceivedSystemState(sys),
+    system: buildPerceivedSystemState(sys, intensity),
   };
 }
 
@@ -153,19 +221,24 @@ type DistortionPhase = 'perception' | 'targeting' | 'effect';
  *   P_perceived > 0  BUT  P_actual <= 0   (actor thinks success, engine fails)
  *   OR
  *   P_perceived <= 0 BUT  P_actual > 0    (actor thinks fail, engine succeeds)
+ *
+ * At higher distortion intensity, coarser granularity makes this more likely
+ * because rounding bins are wider — values near zero are more often pushed
+ * across the sign boundary.
  */
 function detectPerceptionDistortion(
   primaryEdge: CausalEdge | undefined,
   nodeStates: Record<string, NodeState>,
   actorLeverage: number,
-  systemBefore: SystemState
+  systemBefore: SystemState,
+  intensity: number
 ): boolean {
   if (!primaryEdge) return false;
   const target = nodeStates[primaryEdge.target];
   if (!target || target.locked) return false;
 
-  const perceivedConstraint = buildPerceivedNodeState(target).constraint_level;
-  const perceivedPressure = buildPerceivedSystemState(systemBefore).pressure;
+  const perceivedConstraint = buildPerceivedNodeState(target, intensity).constraint_level;
+  const perceivedPressure = buildPerceivedSystemState(systemBefore, intensity).pressure;
 
   const pPerceived =
     (actorLeverage - perceivedConstraint - primaryEdge.propagation_cost - perceivedPressure) *
@@ -182,11 +255,14 @@ function detectPerceptionDistortion(
  * target (lowest perceived constraint among reachable targets) differs from
  * the actual best target (lowest actual constraint).
  *
- * Returns the perceived and actual "best" target node IDs as well.
+ * At higher distortion intensity, wider rounding bins cause two targets with
+ * different actual constraints to appear identical in the AEIC view,
+ * increasing the chance of a tie-break mismatch.
  */
 function detectTargetingDistortion(
   outgoing: CausalEdge[],
-  nodeStates: Record<string, NodeState>
+  nodeStates: Record<string, NodeState>,
+  intensity: number
 ): {
   fires: boolean;
   perceived_target: string | undefined;
@@ -208,8 +284,7 @@ function detectTargetingDistortion(
     const target = nodeStates[edge.target];
     if (!target || target.locked) continue;
 
-    const perceived = buildPerceivedNodeState(target).constraint_level;
-    // First-edge tiebreaker: only replace when strictly less
+    const perceived = buildPerceivedNodeState(target, intensity).constraint_level;
     if (perceived < perceivedMin) {
       perceivedMin = perceived;
       perceivedBest = edge.target;
@@ -324,6 +399,12 @@ export function runStep(
   const now = new Date().toISOString();
   const { thresholds } = simState.system;
 
+  // --- compute distortion intensity from current system state (before any action) ---
+  const distortionIntensity = computeDistortionIntensity(
+    simState.system,
+    simState.instability_spike_active ?? false
+  );
+
   // --- guard: collapsed systems cannot propagate ---
   if (simState.status === 'collapsed') {
     const actorLeverageCollapsed = action.actor_leverage ??
@@ -332,7 +413,7 @@ export function runStep(
     const turnEntry: TurnLogEntry = {
       step: simState.step + 1,
       timestamp: now,
-      perceived_state: buildPerceivedState(simState.node_states, simState.system),
+      perceived_state: buildPerceivedState(simState.node_states, simState.system, distortionIntensity),
       actual_state: {
         node_states: simState.node_states,
         system: simState.system,
@@ -354,6 +435,7 @@ export function runStep(
         reason: `System pressure ${simState.system.pressure.toFixed(3)} >= collapse threshold ${thresholds.collapse.toFixed(2)}`,
       }],
       distortion_phases: [],
+      distortion_intensity: distortionIntensity,
     };
 
     const collapseStep: SimulationStep = {
@@ -372,6 +454,7 @@ export function runStep(
       trace: [...simState.trace, collapseStep],
       turn_log: [...(simState.turn_log ?? []), turnEntry],
       irreversible_events: [...(simState.irreversible_events ?? [])],
+      instability_spike_active: false,
       updatedAt: now,
     };
   }
@@ -386,7 +469,7 @@ export function runStep(
   }
 
   // --- build perceived state BEFORE the action executes ---
-  const perceivedState = buildPerceivedState(nodeStatesBefore, systemBefore);
+  const perceivedState = buildPerceivedState(nodeStatesBefore, systemBefore, distortionIntensity);
 
   // --- mutable working copies ---
   const nodeStates: Record<string, NodeState> = {};
@@ -431,6 +514,7 @@ export function runStep(
       constraint_change: 0,
       triggered_failures: triggeredFailures,
       distortion_phases: [],
+      distortion_intensity: distortionIntensity,
     };
 
     const blockedStep: SimulationStep = {
@@ -449,6 +533,7 @@ export function runStep(
       trace: [...simState.trace, blockedStep],
       turn_log: [...(simState.turn_log ?? []), turnEntry],
       irreversible_events: [...(simState.irreversible_events ?? [])],
+      instability_spike_active: false,
       updatedAt: now,
     };
   }
@@ -466,10 +551,11 @@ export function runStep(
     primaryEdge,
     nodeStates,
     actorLeverage,
-    systemBefore
+    systemBefore,
+    distortionIntensity
   );
   const { fires: targetingFires, perceived_target, actual_target } =
-    detectTargetingDistortion(outgoing, nodeStates);
+    detectTargetingDistortion(outgoing, nodeStates, distortionIntensity);
 
   const edgeResults: EdgeResult[] = [];
   const nodeDeltaMap: Map<string, NodeDelta> = new Map();
@@ -622,8 +708,10 @@ export function runStep(
 
   // --- cascade spread ---
   const newIrreversibleEvents: IrreversibleEvent[] = [];
+  let cascadeFiredThisTurn = false;
 
   if (sys.pressure >= thresholds.cascade) {
+    cascadeFiredThisTurn = true;
     triggeredFailures.push({
       type: 'cascade',
       reason: `System pressure ${sys.pressure.toFixed(3)} >= cascade threshold ${thresholds.cascade.toFixed(2)} — all non-locked nodes absorbing +0.03 constraint`,
@@ -793,6 +881,7 @@ export function runStep(
     perceived_target,
     actual_target,
     distortion_phases: distortionPhases,
+    distortion_intensity: distortionIntensity,
   };
 
   return {
@@ -804,6 +893,7 @@ export function runStep(
     turn_log: [...(simState.turn_log ?? []), turnLogEntry],
     irreversible_events: [...(simState.irreversible_events ?? []), ...newIrreversibleEvents],
     status: sys.status,
+    instability_spike_active: cascadeFiredThisTurn,
     updatedAt: now,
   };
 }

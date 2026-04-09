@@ -189,6 +189,12 @@ export interface TurnLogEntry {
   actual_target?: string;
   /** Which distortion phases fired this turn. */
   distortion_phases: Array<'perception' | 'targeting' | 'effect'>;
+  /**
+   * Deterministic 0–1 score reflecting AEIC degradation severity this turn.
+   * Increases with pressure, constraint, and proximity to thresholds.
+   * +0.30 spike if cascade fired on the previous turn.
+   */
+  distortion_intensity: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +213,11 @@ export interface SimulationState {
   irreversible_events: IrreversibleEvent[];
   /** Optional human-readable save label. */
   label?: string;
+  /**
+   * True if cascade fired on the previous turn — signals an instability spike
+   * (+0.30 to distortion_intensity) on the next turn.
+   */
+  instability_spike_active?: boolean;
   createdAt: string;
   updatedAt: string;
 }

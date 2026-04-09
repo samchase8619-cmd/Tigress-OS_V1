@@ -1578,3 +1578,66 @@ body {
 .mp-irrev-icon { font-size: 12px; }
 .mp-irrev-turn { font-size: 10px; color: var(--text-secondary); min-width: 22px; }
 .mp-irrev-desc { color: var(--text-primary); line-height: 1.3; }
+
+/* ---------------------------------------------------------------------------
+ * ManualPlay — distortion intensity gauge  (new)
+ * --------------------------------------------------------------------------- */
+
+.mp-distortion-gauge {
+  margin-top: 8px;
+  padding: 8px 0 4px 0;
+}
+.mp-distortion-gauge-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.mp-distortion-gauge-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.mp-distortion-gauge-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  border-radius: 8px;
+  padding: 2px 8px;
+  letter-spacing: 0.04em;
+}
+.mp-distortion-gauge-track {
+  height: 5px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+.mp-distortion-gauge-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.mp-distortion-gauge-desc {
+  font-size: 10px;
+  color: var(--text-secondary);
+  line-height: 1.3;
+}
+
+/* Instability spike badge */
+.mp-status-badge--spike {
+  background: rgba(139,92,246,0.12);
+  color: #8b5cf6;
+  border: 1px solid rgba(139,92,246,0.3);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin-top: 4px;
+  letter-spacing: 0.04em;
+}

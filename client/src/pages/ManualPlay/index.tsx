@@ -459,6 +459,48 @@ function IrreversibleEventsLog({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Distortion intensity gauge
+// ---------------------------------------------------------------------------
+
+function DistortionIntensityGauge({ intensity }: { intensity: number }) {
+  // Colour ramp: green (low) → amber (medium) → red (high)
+  const color =
+    intensity < 0.3 ? '#22c55e' :
+    intensity < 0.6 ? '#f59e0b' :
+    '#dc2626';
+
+  const label =
+    intensity < 0.3 ? 'LOW'  :
+    intensity < 0.6 ? 'MED'  :
+    'HIGH';
+
+  const description =
+    intensity < 0.3
+      ? 'AEIC perception is mostly accurate'
+      : intensity < 0.6
+      ? 'AEIC granularity degraded — partial distortion possible'
+      : 'AEIC severely degraded — sign inversion / wrong-target probable';
+
+  return (
+    <div className="mp-distortion-gauge">
+      <div className="mp-distortion-gauge-header">
+        <span className="mp-distortion-gauge-label">AEIC Distortion Intensity</span>
+        <span className="mp-distortion-gauge-badge" style={{ background: color }}>
+          {label} {(intensity * 100).toFixed(0)}%
+        </span>
+      </div>
+      <div className="mp-distortion-gauge-track">
+        <div
+          className="mp-distortion-gauge-fill"
+          style={{ width: `${intensity * 100}%`, background: color }}
+        />
+      </div>
+      <div className="mp-distortion-gauge-desc">{description}</div>
+    </div>
+  );
+}
+
 function TurnResult({
   entry,
   graph,
@@ -492,7 +534,8 @@ function TurnResult({
         <strong>Why:</strong> {entry.propagation_result.reason}
       </div>
 
-      {/* System deltas */}
+      {/* Distortion intensity gauge */}
+      <DistortionIntensityGauge intensity={entry.distortion_intensity ?? 0} />
       <div className="mp-result-section">
         <div className="mp-result-section-title">System Deltas</div>
         <div className="mp-sys-deltas">
@@ -730,7 +773,20 @@ export default function ManualPlay() {
                 }
               </div>
             )}
+            {simState.instability_spike_active && (
+              <div className="mp-status-badge mp-status-badge--spike">
+                <Zap size={11} /> INSTABILITY SPIKE
+              </div>
+            )}
             <div className="mp-sys-step">Turn {simState.step}</div>
+
+            {/* Current distortion intensity (from last turn log entry) */}
+            {(() => {
+              const lastIntensity = simState.turn_log.at(-1)?.distortion_intensity;
+              return lastIntensity !== undefined
+                ? <DistortionIntensityGauge intensity={lastIntensity} />
+                : null;
+            })()}
 
             {/* Irreversible events */}
             {selectedGraph && (simState.irreversible_events ?? []).length > 0 && (
