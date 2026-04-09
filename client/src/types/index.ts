@@ -98,6 +98,79 @@ export interface SimulationStep {
   timestamp: string;
 }
 
+// ---------------------------------------------------------------------------
+// AEIC — Actor Environmental Information Channel perceived state
+// ---------------------------------------------------------------------------
+
+/** What the actor perceives — granularity-reduced, recovery_capacity hidden. */
+export interface PerceivedNodeState {
+  /** Rounded to 0.1 granularity. */
+  stability: number;
+  /** Rounded to 0.05 granularity. */
+  constraint_level: number;
+  locked: boolean;
+}
+
+export interface PerceivedSystemState {
+  /** Rounded to 0.05 granularity. */
+  pressure: number;
+  /** Always false — recovery_capacity is not visible to the actor. */
+  recovery_capacity_visible: false;
+  status: 'active' | 'cascade' | 'collapsed';
+}
+
+// ---------------------------------------------------------------------------
+// Turn log — full per-turn visibility record
+// ---------------------------------------------------------------------------
+
+export interface TriggeredFailure {
+  type: 'propagation_failure' | 'correction_failure' | 'distortion_failure' | 'cascade' | 'collapse';
+  edge_id?: string;
+  target_node_id?: string;
+  reason: string;
+}
+
+export interface TurnLogEntry {
+  step: number;
+  timestamp: string;
+
+  /** What the actor perceives BEFORE acting (AEIC-filtered). */
+  perceived_state: {
+    node_states: Record<string, PerceivedNodeState>;
+    system: PerceivedSystemState;
+  };
+
+  /** True system state BEFORE the action — hidden from actor. */
+  actual_state: {
+    node_states: Record<string, NodeState>;
+    system: SystemState;
+  };
+
+  /** The action submitted by the actor. */
+  selected_action: {
+    source_node_id: string;
+    actor_leverage: number;
+  };
+
+  /** Full propagation result with reason string. */
+  propagation_result: {
+    outcome: StepOutcome;
+    reason: string;
+    edge_results: EdgeResult[];
+  };
+
+  /** System variable deltas (after − before). */
+  recovery_capacity_change: number;
+  pressure_change: number;
+  constraint_change: number;
+
+  /** All discrete failure events that fired during this turn. */
+  triggered_failures: TriggeredFailure[];
+}
+
+// ---------------------------------------------------------------------------
+// Simulation state
+// ---------------------------------------------------------------------------
 export interface SimulationState {
   id: string;
   graphId: string;
@@ -105,6 +178,7 @@ export interface SimulationState {
   system: SystemState;
   node_states: Record<string, NodeState>;
   trace: SimulationStep[];
+  turn_log: TurnLogEntry[];
   status: 'active' | 'cascade' | 'collapsed';
   createdAt: string;
   updatedAt: string;

@@ -11,7 +11,7 @@ import ReactFlow, {
   Connection,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Plus, Play, RotateCcw, Trash2, ChevronRight, AlertTriangle, Zap, Lock } from 'lucide-react';
+import { Plus, Play, RotateCcw, Trash2, ChevronRight, AlertTriangle, Zap, Lock, Eye, EyeOff } from 'lucide-react';
 import type {
   CausalGraph,
   CausalNode,
@@ -20,6 +20,8 @@ import type {
   NodeState,
   StepOutcome,
   SystemState,
+  TurnLogEntry,
+  TriggeredFailure,
 } from '../../types';
 import * as api from '../../api/client';
 
@@ -182,6 +184,212 @@ const outcomeStyle: Record<StepOutcome, string> = {
   collapse: '#dc2626',
 };
 
+const failureTypeIcon: Record<TriggeredFailure['type'], string> = {
+  propagation_failure: '⛔',
+  correction_failure: '🔄',
+  distortion_failure: '🌀',
+  cascade: '⚡',
+  collapse: '💀',
+};
+
+// ---------------------------------------------------------------------------
+// Turn Log panel — full per-turn visibility with perceived vs actual state
+// ---------------------------------------------------------------------------
+function TurnLogPanel({ entries, graph }: { entries: TurnLogEntry[]; graph: CausalGraph | null }) {
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const [showActual, setShowActual] = useState<Record<number, boolean>>({});
+
+  if (!graph || entries.length === 0) {
+    return (
+      <div className="turn-log-empty">
+        <p>No turns logged yet. Run a step to begin.</p>
+      </div>
+    );
+  }
+
+  const nodeLabel = (id: string) =>
+    graph.nodes.find(n => n.id === id)?.label ?? id;
+
+  const edgeLabel = (id: string) => {
+    const e = graph.edges.find(e => e.id === id);
+    return e ? `${e.label} (→ ${nodeLabel(e.target)})` : id;
+  };
+
+  return (
+    <div className="turn-log">
+      {[...entries].reverse().map(entry => {
+        const isExpanded = expanded === entry.step;
+        const showA = showActual[entry.step] ?? false;
+        const hasFailures = entry.triggered_failures.length > 0;
+
+        return (
+          <div
+            key={entry.step}
+            className={`turn-log-entry ${isExpanded ? 'turn-log-entry--open' : ''}`}
+          >
+            {/* Header row */}
+            <button
+              className="turn-log-header"
+              onClick={() => setExpanded(isExpanded ? null : entry.step)}
+            >
+              <span className="tl-step">Turn {entry.step}</span>
+              <span
+                className="tl-outcome"
+                style={{ color: outcomeStyle[entry.propagation_result.outcome] }}
+              >
+                {entry.propagation_result.outcome.replace(/_/g, ' ')}
+              </span>
+              <span className="tl-action">
+                {nodeLabel(entry.selected_action.source_node_id)} @ {entry.selected_action.actor_leverage.toFixed(2)}
+              </span>
+              {hasFailures && (
+                <span className="tl-failures-badge">
+                  {entry.triggered_failures.length} failure{entry.triggered_failures.length > 1 ? 's' : ''}
+                </span>
+              )}
+              <ChevronRight
+                size={12}
+                className={`tl-chevron ${isExpanded ? 'tl-chevron--open' : ''}`}
+              />
+            </button>
+
+            {isExpanded && (
+              <div className="turn-log-body">
+
+                {/* Reason */}
+                <div className="tl-section">
+                  <div className="tl-section-title">Propagation Result</div>
+                  <div className="tl-reason">{entry.propagation_result.reason}</div>
+                </div>
+
+                {/* Edge results */}
+                {entry.propagation_result.edge_results.length > 0 && (
+                  <div className="tl-section">
+                    <div className="tl-section-title">Edge Results</div>
+                    {entry.propagation_result.edge_results.map(er => (
+                      <div key={er.edge_id} className="tl-edge-row">
+                        <span
+                          className="tl-edge-outcome"
+                          style={{ color: outcomeStyle[er.outcome] }}
+                        >
+                          {er.outcome === 'success' ? '✓' : '✗'}
+                        </span>
+                        <span className="tl-edge-label">{edgeLabel(er.edge_id)}</span>
+                        <span className="tl-edge-detail">
+                          P={er.propagation_potential.toFixed(3)}
+                          {' '}Δconstraint={er.constraint_delta >= 0 ? '+' : ''}{er.constraint_delta.toFixed(3)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* System variable deltas */}
+                <div className="tl-section">
+                  <div className="tl-section-title">System Deltas</div>
+                  <div className="tl-deltas">
+                    <DeltaRow label="Pressure" value={entry.pressure_change} />
+                    <DeltaRow label="Constraint" value={entry.constraint_change} />
+                    <DeltaRow label="Recovery" value={entry.recovery_capacity_change} invert />
+                  </div>
+                </div>
+
+                {/* Triggered failures */}
+                {hasFailures && (
+                  <div className="tl-section">
+                    <div className="tl-section-title">Triggered Failures</div>
+                    {entry.triggered_failures.map((f, i) => (
+                      <div key={i} className="tl-failure-row">
+                        <span className="tl-failure-icon">{failureTypeIcon[f.type]}</span>
+                        <div className="tl-failure-detail">
+                          <span className="tl-failure-type">{f.type.replace(/_/g, ' ')}</span>
+                          {f.edge_id && (
+                            <span className="tl-failure-edge">via {edgeLabel(f.edge_id)}</span>
+                          )}
+                          <span className="tl-failure-reason">{f.reason}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Perceived vs Actual state toggle */}
+                <div className="tl-section">
+                  <div className="tl-state-toggle">
+                    <div className="tl-section-title">
+                      {showA ? (
+                        <><EyeOff size={11} /> Actual State (hidden)</>
+                      ) : (
+                        <><Eye size={11} /> Perceived State (AEIC)</>
+                      )}
+                    </div>
+                    <button
+                      className="tl-toggle-btn"
+                      onClick={() => setShowActual(prev => ({ ...prev, [entry.step]: !showA }))}
+                    >
+                      {showA ? 'show perceived' : 'show actual'}
+                    </button>
+                  </div>
+
+                  {!showA ? (
+                    // Perceived (AEIC-filtered)
+                    <div className="tl-state-grid">
+                      <div className="tl-state-sys">
+                        <span>Pressure (perceived): {entry.perceived_state.system.pressure.toFixed(2)}</span>
+                        <span className="tl-hidden-badge">recovery hidden</span>
+                        <span>Status: {entry.perceived_state.system.status}</span>
+                      </div>
+                      {Object.entries(entry.perceived_state.node_states).map(([id, ns]) => (
+                        <div key={id} className="tl-state-node">
+                          <span className="tl-node-label">{nodeLabel(id)}</span>
+                          <span>constraint≈{ns.constraint_level.toFixed(2)}</span>
+                          <span>stability≈{ns.stability.toFixed(1)}</span>
+                          {ns.locked && <span className="tl-locked-tag">🔒</span>}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    // Actual (hidden)
+                    <div className="tl-state-grid">
+                      <div className="tl-state-sys">
+                        <span>Pressure: {entry.actual_state.system.pressure.toFixed(3)}</span>
+                        <span>Recovery: {entry.actual_state.system.recovery_capacity.toFixed(3)}</span>
+                        <span>Status: {entry.actual_state.system.status}</span>
+                      </div>
+                      {Object.entries(entry.actual_state.node_states).map(([id, ns]) => (
+                        <div key={id} className="tl-state-node">
+                          <span className="tl-node-label">{nodeLabel(id)}</span>
+                          <span>constraint={ns.constraint_level.toFixed(3)}</span>
+                          <span>stability={ns.stability.toFixed(3)}</span>
+                          {ns.locked && <span className="tl-locked-tag">🔒</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DeltaRow({ label, value, invert = false }: { label: string; value: number; invert?: boolean }) {
+  const positive = invert ? value < 0 : value > 0;
+  const negative = invert ? value > 0 : value < 0;
+  const color = Math.abs(value) < 0.001 ? '#6b7280' : positive ? '#22c55e' : negative ? '#dc2626' : '#6b7280';
+  const sign = value > 0 ? '+' : '';
+  return (
+    <div className="tl-delta-row">
+      <span className="tl-delta-label">{label}</span>
+      <span className="tl-delta-value" style={{ color }}>{sign}{value.toFixed(3)}</span>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -199,6 +407,8 @@ export default function SimulationEngine() {
   const [newGraphDesc, setNewGraphDesc] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 'controls' | 'turnlog'
+  const [activeTab, setActiveTab] = useState<'controls' | 'turnlog'>('controls');
 
   const loadGraphs = async () => {
     try {
@@ -357,7 +567,7 @@ export default function SimulationEngine() {
               <p className="text-secondary">{selectedGraph.description}</p>
             </div>
 
-            {/* System gauge */}
+            {/* System gauge (always visible) */}
             {simState && (
               <div className="panel-section">
                 <h4>System State</h4>
@@ -365,138 +575,169 @@ export default function SimulationEngine() {
               </div>
             )}
 
-            {/* Simulation controls */}
-            <div className="panel-section">
-              <h4>Simulation Controls</h4>
-
-              {/* Source node selector */}
-              <div className="form-group form-group--compact">
-                <label>Source node</label>
-                <select
-                  value={selectedSourceId ?? ''}
-                  onChange={e => {
-                    setSelectedSourceId(e.target.value);
-                    const n = selectedGraph.nodes.find(n => n.id === e.target.value);
-                    if (n) setActorLeverage(n.actor_leverage);
-                  }}
-                >
-                  {selectedGraph.nodes.map(n => (
-                    <option key={n.id} value={n.id} disabled={
-                      (simState?.node_states[n.id]?.locked) ?? n.locked
-                    }>
-                      {(simState?.node_states[n.id]?.locked ?? n.locked) ? '🔒 ' : ''}{n.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Actor leverage slider */}
-              <div className="form-group form-group--compact">
-                <label>Actor leverage: <strong>{actorLeverage.toFixed(2)}</strong></label>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={actorLeverage}
-                  onChange={e => setActorLeverage(Number(e.target.value))}
-                />
-              </div>
-
-              <div className="sim-controls">
-                <button
-                  className="btn-primary"
-                  onClick={handleRunStep}
-                  disabled={loading || !selectedSourceId || simState?.status === 'collapsed'}
-                >
-                  <Play size={14} /> {loading ? 'Running...' : 'Run Step'}
-                </button>
-                <button className="btn-secondary" onClick={handleReset}>
-                  <RotateCcw size={14} /> Reset
-                </button>
-              </div>
-
-              {simState && (
-                <div className="sim-info">
-                  <span className="badge">Step {simState.step}</span>
-                  <span className="text-secondary">
-                    {Object.values(simState.node_states).filter(n => n.locked).length} locked
-                  </span>
-                </div>
-              )}
+            {/* Tab bar */}
+            <div className="panel-tabs">
+              <button
+                className={`panel-tab ${activeTab === 'controls' ? 'panel-tab--active' : ''}`}
+                onClick={() => setActiveTab('controls')}
+              >
+                Controls
+              </button>
+              <button
+                className={`panel-tab ${activeTab === 'turnlog' ? 'panel-tab--active' : ''}`}
+                onClick={() => setActiveTab('turnlog')}
+              >
+                Turn Log{simState?.turn_log?.length ? ` (${simState.turn_log.length})` : ''}
+              </button>
             </div>
 
-            {/* Trace */}
-            {simState && simState.trace.length > 0 && (
-              <div className="panel-section trace-section">
-                <h4>Propagation Trace</h4>
-                <ul className="trace-list">
-                  {simState.trace.slice().reverse().map(t => (
-                    <li key={t.step} className="trace-item">
-                      <ChevronRight size={12} />
-                      <span>Step {t.step}:</span>
-                      <span
-                        className="trace-outcome"
-                        style={{ color: outcomeStyle[t.step_outcome] }}
-                      >
-                        {t.step_outcome.replace(/_/g, ' ')}
+            {/* Tab: Controls */}
+            {activeTab === 'controls' && (
+              <>
+                {/* Simulation controls */}
+                <div className="panel-section">
+                  <h4>Simulation Controls</h4>
+
+                  {/* Source node selector */}
+                  <div className="form-group form-group--compact">
+                    <label>Source node</label>
+                    <select
+                      value={selectedSourceId ?? ''}
+                      onChange={e => {
+                        setSelectedSourceId(e.target.value);
+                        const n = selectedGraph.nodes.find(n => n.id === e.target.value);
+                        if (n) setActorLeverage(n.actor_leverage);
+                      }}
+                    >
+                      {selectedGraph.nodes.map(n => (
+                        <option key={n.id} value={n.id} disabled={
+                          (simState?.node_states[n.id]?.locked) ?? n.locked
+                        }>
+                          {(simState?.node_states[n.id]?.locked ?? n.locked) ? '🔒 ' : ''}{n.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Actor leverage slider */}
+                  <div className="form-group form-group--compact">
+                    <label>Actor leverage: <strong>{actorLeverage.toFixed(2)}</strong></label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={actorLeverage}
+                      onChange={e => setActorLeverage(Number(e.target.value))}
+                    />
+                  </div>
+
+                  <div className="sim-controls">
+                    <button
+                      className="btn-primary"
+                      onClick={handleRunStep}
+                      disabled={loading || !selectedSourceId || simState?.status === 'collapsed'}
+                    >
+                      <Play size={14} /> {loading ? 'Running...' : 'Run Step'}
+                    </button>
+                    <button className="btn-secondary" onClick={handleReset}>
+                      <RotateCcw size={14} /> Reset
+                    </button>
+                  </div>
+
+                  {simState && (
+                    <div className="sim-info">
+                      <span className="badge">Step {simState.step}</span>
+                      <span className="text-secondary">
+                        {Object.values(simState.node_states).filter(n => n.locked).length} locked
                       </span>
-                      <span className="text-secondary trace-sub">
-                        {t.edge_results.length} edges · leverage {t.action.actor_leverage.toFixed(2)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Compact trace (summary) */}
+                {simState && simState.trace.length > 0 && (
+                  <div className="panel-section trace-section">
+                    <h4>Propagation Trace</h4>
+                    <ul className="trace-list">
+                      {simState.trace.slice().reverse().map(t => (
+                        <li key={t.step} className="trace-item">
+                          <ChevronRight size={12} />
+                          <span>Step {t.step}:</span>
+                          <span
+                            className="trace-outcome"
+                            style={{ color: outcomeStyle[t.step_outcome] }}
+                          >
+                            {t.step_outcome.replace(/_/g, ' ')}
+                          </span>
+                          <span className="text-secondary trace-sub">
+                            {t.edge_results.length} edges · leverage {t.action.actor_leverage.toFixed(2)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Node detail */}
+                {selectedNode && (
+                  <div className="panel-section node-detail">
+                    <h4>Node: {selectedNode.label}</h4>
+                    <div
+                      className="node-type-badge"
+                      style={{ background: typeColor[selectedNode.type as NodeType] }}
+                    >
+                      {selectedNode.type}
+                    </div>
+                    <p className="text-secondary">{selectedNode.description}</p>
+                    {(() => {
+                      const ns = simState?.node_states[selectedNode.id];
+                      const stability = ns?.stability ?? selectedNode.stability;
+                      const constraint = ns?.constraint_level ?? selectedNode.constraint_level;
+                      const locked = ns?.locked ?? selectedNode.locked;
+                      return (
+                        <div className="node-stats">
+                          <div className="stat-row">
+                            <span>Stability</span>
+                            <div className="mini-bar">
+                              <div style={{ width: `${stability * 100}%`, background: '#22c55e' }} />
+                            </div>
+                            <span>{(stability * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="stat-row">
+                            <span>Constraint</span>
+                            <div className="mini-bar">
+                              <div style={{ width: `${constraint * 100}%`, background: '#dc2626' }} />
+                            </div>
+                            <span>{(constraint * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="stat-row">
+                            <span>Leverage</span>
+                            <div className="mini-bar">
+                              <div style={{ width: `${selectedNode.actor_leverage * 100}%`, background: '#7c3aed' }} />
+                            </div>
+                            <span>{(selectedNode.actor_leverage * 100).toFixed(0)}%</span>
+                          </div>
+                          {locked && (
+                            <div className="lock-warning">
+                              <Lock size={12} /> Node is locked
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </>
             )}
 
-            {/* Node detail */}
-            {selectedNode && (
-              <div className="panel-section node-detail">
-                <h4>Node: {selectedNode.label}</h4>
-                <div
-                  className="node-type-badge"
-                  style={{ background: typeColor[selectedNode.type as NodeType] }}
-                >
-                  {selectedNode.type}
-                </div>
-                <p className="text-secondary">{selectedNode.description}</p>
-                {(() => {
-                  const ns = simState?.node_states[selectedNode.id];
-                  const stability = ns?.stability ?? selectedNode.stability;
-                  const constraint = ns?.constraint_level ?? selectedNode.constraint_level;
-                  const locked = ns?.locked ?? selectedNode.locked;
-                  return (
-                    <div className="node-stats">
-                      <div className="stat-row">
-                        <span>Stability</span>
-                        <div className="mini-bar">
-                          <div style={{ width: `${stability * 100}%`, background: '#22c55e' }} />
-                        </div>
-                        <span>{(stability * 100).toFixed(0)}%</span>
-                      </div>
-                      <div className="stat-row">
-                        <span>Constraint</span>
-                        <div className="mini-bar">
-                          <div style={{ width: `${constraint * 100}%`, background: '#dc2626' }} />
-                        </div>
-                        <span>{(constraint * 100).toFixed(0)}%</span>
-                      </div>
-                      <div className="stat-row">
-                        <span>Leverage</span>
-                        <div className="mini-bar">
-                          <div style={{ width: `${selectedNode.actor_leverage * 100}%`, background: '#7c3aed' }} />
-                        </div>
-                        <span>{(selectedNode.actor_leverage * 100).toFixed(0)}%</span>
-                      </div>
-                      {locked && (
-                        <div className="lock-warning">
-                          <Lock size={12} /> Node is locked
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
+            {/* Tab: Turn Log */}
+            {activeTab === 'turnlog' && (
+              <div className="panel-section panel-section--turnlog">
+                <TurnLogPanel
+                  entries={simState?.turn_log ?? []}
+                  graph={selectedGraph}
+                />
               </div>
             )}
           </>

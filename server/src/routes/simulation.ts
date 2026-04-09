@@ -116,6 +116,7 @@ simulationRouter.post('/graphs/:id/simulate', (req: Request, res: Response) => {
       system: buildInitialSystemState(),
       node_states: buildInitialNodeStates(graph.nodes),
       trace: [],
+      turn_log: [],
       status: 'active',
       createdAt: now,
       updatedAt: now,
@@ -130,7 +131,7 @@ simulationRouter.post('/graphs/:id/simulate', (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
-// Simulation — query / delete
+// Simulation — query / delete / turn_log
 // ---------------------------------------------------------------------------
 
 simulationRouter.get('/graphs/:id/simulations', (req: Request, res: Response) => {
@@ -146,6 +147,21 @@ simulationRouter.get('/simulations/:simId', (req: Request, res: Response) => {
     return;
   }
   res.json(sim);
+});
+
+/**
+ * GET /api/simulation/simulations/:simId/turn_log
+ * Returns just the turn_log array for a simulation — full per-turn visibility
+ * with perceived_state, actual_state, selected_action, propagation_result,
+ * system variable deltas, and triggered failures.
+ */
+simulationRouter.get('/simulations/:simId/turn_log', (req: Request, res: Response) => {
+  const sim = readOne<SimulationState>('simulations', req.params.simId);
+  if (!sim) {
+    res.status(404).json({ error: 'Simulation not found' });
+    return;
+  }
+  res.json(sim.turn_log ?? []);
 });
 
 simulationRouter.delete('/simulations/:simId', (req: Request, res: Response) => {

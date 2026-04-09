@@ -20,6 +20,10 @@ import type {
   EdgeResult,
   NodeDelta,
   NodeState,
+  PerceivedNodeState,
+  PerceivedSystemState,
+  TriggeredFailure,
+  TurnLogEntry,
 } from '../validation/schemas';
 
 // ---------------------------------------------------------------------------
@@ -40,6 +44,10 @@ const DEFAULT_THRESHOLDS = {
 
 function clamp(v: number, min = 0, max = 1): number {
   return Math.max(min, Math.min(max, v));
+}
+
+function round(v: number, granularity: number): number {
+  return Math.round(v / granularity) * granularity;
 }
 
 /** Build the initial system state for a brand-new simulation. */
@@ -89,6 +97,105 @@ function computeStatus(
 }
 
 // ---------------------------------------------------------------------------
+// AEIC — Actor Environmental Information Channel
+// Produces the actor's PERCEIVED view of system state.
+// Rules:
+//  - node stability: rounded to 0.1 granularity (coarse visibility)
+//  - node constraint_level: rounded to 0.05 granularity (medium visibility)
+//  - node locked: exact (binary, fully observable)
+//  - system pressure: rounded to 0.05 granularity (coarse visibility)
+//  - system recovery_capacity: NOT visible (hidden variable)
+//  - system status: exact (state transitions are broadcast)
+// ---------------------------------------------------------------------------
+
+function buildPerceivedNodeState(state: NodeState): PerceivedNodeState {
+  return {
+    stability: round(clamp(state.stability), 0.1),
+    constraint_level: round(clamp(state.constraint_level), 0.05),
+    locked: state.locked,
+  };
+}
+
+function buildPerceivedSystemState(sys: SystemState): PerceivedSystemState {
+  return {
+    pressure: round(clamp(sys.pressure), 0.05),
+    recovery_capacity_visible: false,
+    status: sys.status,
+  };
+}
+
+function buildPerceivedState(
+  nodeStates: Record<string, NodeState>,
+  sys: SystemState
+): TurnLogEntry['perceived_state'] {
+  const perceived: Record<string, PerceivedNodeState> = {};
+  for (const id of Object.keys(nodeStates)) {
+    perceived[id] = buildPerceivedNodeState(nodeStates[id]);
+  }
+  return {
+    node_states: perceived,
+    system: buildPerceivedSystemState(sys),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Reason strings — human-readable propagation result explanations
+// ---------------------------------------------------------------------------
+
+function reasonForEdgeOutcome(
+  outcome: EdgeResult['outcome'],
+  potential: number,
+  failureProb: number,
+  roll: number,
+  targetConstraint: number,
+  lockThreshold: number,
+  pressure: number,
+  cascadeThreshold: number,
+  wasLocked: boolean
+): string {
+  if (wasLocked) {
+    return `Target node is locked (constraint_level=${targetConstraint.toFixed(3)} >= lock threshold ${lockThreshold.toFixed(2)})`;
+  }
+  switch (outcome) {
+    case 'success':
+      return `P=${potential.toFixed(3)} succeeded (roll=${roll.toFixed(3)} >= failure_prob=${failureProb.toFixed(3)})`;
+    case 'propagation_failure':
+      if (potential > 0) {
+        return `Statistical block: P=${potential.toFixed(3)} > 0 but roll=${roll.toFixed(3)} < failure_prob=${failureProb.toFixed(3)} — system pressure overwhelmed recovery`;
+      }
+      return `Insufficient potential P=${potential.toFixed(3)}: target constraint_level=${targetConstraint.toFixed(3)} is near lock threshold (${(lockThreshold * 0.85).toFixed(3)})`;
+    case 'correction_failure':
+      return `Correction inverted by system pressure: pressure=${pressure.toFixed(3)} >= cascade*0.8=${(cascadeThreshold * 0.8).toFixed(3)}; intended change absorbed by systemic stress`;
+    case 'distortion_failure':
+      return `Distortion: P=${potential.toFixed(3)} reached target but was absorbed without causal effect; downstream constraint spill applied`;
+    default:
+      return `Unknown outcome for edge`;
+  }
+}
+
+function reasonForStepOutcome(
+  outcome: SimulationStep['step_outcome'],
+  sys: SystemState
+): string {
+  switch (outcome) {
+    case 'success':
+      return 'All outgoing edges propagated successfully';
+    case 'propagation_failure':
+      return 'Propagation was structurally or statistically blocked on at least one edge';
+    case 'correction_failure':
+      return `System pressure (${sys.pressure.toFixed(3)}) is too high — corrections are being inverted`;
+    case 'distortion_failure':
+      return `Action energy was dispersed without causal effect; downstream spill occurred`;
+    case 'cascade':
+      return `SYSTEM CASCADE: pressure ${sys.pressure.toFixed(3)} >= cascade threshold ${sys.thresholds.cascade.toFixed(2)} — all non-locked nodes absorbing additional constraint`;
+    case 'collapse':
+      return `SYSTEM COLLAPSED: pressure ${sys.pressure.toFixed(3)} >= collapse threshold ${sys.thresholds.collapse.toFixed(2)} — no further propagation possible`;
+    default:
+      return `Unknown step outcome`;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Failure mode classification (per GAME_ENGINE.yaml outcome_rules)
 // ---------------------------------------------------------------------------
 
@@ -130,12 +237,38 @@ export function runStep(
 
   // --- guard: collapsed systems cannot propagate ---
   if (simState.status === 'collapsed') {
+    const actorLeverageCollapsed = action.actor_leverage ??
+      (graph.nodes.find((n: CausalNode) => n.id === action.source_node_id)?.actor_leverage ?? 0);
+
+    const turnEntry: TurnLogEntry = {
+      step: simState.step + 1,
+      timestamp: now,
+      perceived_state: buildPerceivedState(simState.node_states, simState.system),
+      actual_state: {
+        node_states: simState.node_states,
+        system: simState.system,
+      },
+      selected_action: {
+        source_node_id: action.source_node_id,
+        actor_leverage: actorLeverageCollapsed,
+      },
+      propagation_result: {
+        outcome: 'collapse',
+        reason: `SYSTEM COLLAPSED: pressure ${simState.system.pressure.toFixed(3)} >= collapse threshold ${thresholds.collapse.toFixed(2)} — no further propagation possible`,
+        edge_results: [],
+      },
+      recovery_capacity_change: 0,
+      pressure_change: 0,
+      constraint_change: 0,
+      triggered_failures: [{
+        type: 'collapse',
+        reason: `System pressure ${simState.system.pressure.toFixed(3)} >= collapse threshold ${thresholds.collapse.toFixed(2)}`,
+      }],
+    };
+
     const collapseStep: SimulationStep = {
       step: simState.step + 1,
-      action: {
-        source_node_id: action.source_node_id,
-        actor_leverage: 0,
-      },
+      action: { source_node_id: action.source_node_id, actor_leverage: actorLeverageCollapsed },
       system_state_before: { ...simState.system },
       system_state_after: { ...simState.system },
       edge_results: [],
@@ -147,12 +280,22 @@ export function runStep(
       ...simState,
       step: simState.step + 1,
       trace: [...simState.trace, collapseStep],
+      turn_log: [...(simState.turn_log ?? []), turnEntry],
       updatedAt: now,
     };
   }
 
   // --- snapshot system state before ---
   const systemBefore: SystemState = { ...simState.system, thresholds: { ...thresholds } };
+
+  // --- snapshot node states before (for actual_state in turn log) ---
+  const nodeStatesBefore: Record<string, NodeState> = {};
+  for (const id of Object.keys(simState.node_states)) {
+    nodeStatesBefore[id] = { ...simState.node_states[id] };
+  }
+
+  // --- build perceived state BEFORE the action executes ---
+  const perceivedState = buildPerceivedState(nodeStatesBefore, systemBefore);
 
   // --- mutable working copies ---
   const nodeStates: Record<string, NodeState> = {};
@@ -166,8 +309,38 @@ export function runStep(
   const actorLeverage = action.actor_leverage ??
     (sourceNode?.actor_leverage ?? 0.5);
 
+  // Triggered failures collector
+  const triggeredFailures: TriggeredFailure[] = [];
+
   // --- guard: source node must exist and not be locked ---
   if (!sourceNode || (nodeStates[action.source_node_id]?.locked ?? false)) {
+    const blockReason = !sourceNode
+      ? `Source node '${action.source_node_id}' does not exist in the graph`
+      : `Source node '${action.source_node_id}' is locked (constraint_level=${nodeStates[action.source_node_id].constraint_level.toFixed(3)})`;
+
+    triggeredFailures.push({
+      type: 'propagation_failure',
+      target_node_id: action.source_node_id,
+      reason: blockReason,
+    });
+
+    const turnEntry: TurnLogEntry = {
+      step: simState.step + 1,
+      timestamp: now,
+      perceived_state: perceivedState,
+      actual_state: { node_states: nodeStatesBefore, system: systemBefore },
+      selected_action: { source_node_id: action.source_node_id, actor_leverage: actorLeverage },
+      propagation_result: {
+        outcome: 'propagation_failure',
+        reason: blockReason,
+        edge_results: [],
+      },
+      recovery_capacity_change: 0,
+      pressure_change: 0,
+      constraint_change: 0,
+      triggered_failures: triggeredFailures,
+    };
+
     const blockedStep: SimulationStep = {
       step: simState.step + 1,
       action: { source_node_id: action.source_node_id, actor_leverage: actorLeverage },
@@ -182,6 +355,7 @@ export function runStep(
       ...simState,
       step: simState.step + 1,
       trace: [...simState.trace, blockedStep],
+      turn_log: [...(simState.turn_log ?? []), turnEntry],
       updatedAt: now,
     };
   }
@@ -221,6 +395,13 @@ export function runStep(
 
     // Locked target → propagation_failure immediately
     if (target.locked) {
+      const lockedReason = `Target node '${targetId}' is locked (constraint_level=${target.constraint_level.toFixed(3)} >= lock threshold ${thresholds.lock.toFixed(2)})`;
+      triggeredFailures.push({
+        type: 'propagation_failure',
+        edge_id: edge.id,
+        target_node_id: targetId,
+        reason: lockedReason,
+      });
       edgeResults.push({
         edge_id: edge.id,
         outcome: 'propagation_failure',
@@ -293,6 +474,26 @@ export function runStep(
       }
     }
 
+    // Record failure events
+    if (outcome !== 'success') {
+      triggeredFailures.push({
+        type: outcome,
+        edge_id: edge.id,
+        target_node_id: targetId,
+        reason: reasonForEdgeOutcome(
+          outcome,
+          potential,
+          failureProb,
+          roll,
+          target.constraint_level,
+          thresholds.lock,
+          sys.pressure,
+          thresholds.cascade,
+          false
+        ),
+      });
+    }
+
     // Lock check
     if (target.constraint_level >= thresholds.lock) {
       target.locked = true;
@@ -314,6 +515,11 @@ export function runStep(
 
   // --- cascade spread ---
   if (sys.pressure >= thresholds.cascade) {
+    triggeredFailures.push({
+      type: 'cascade',
+      reason: `System pressure ${sys.pressure.toFixed(3)} >= cascade threshold ${thresholds.cascade.toFixed(2)} — all non-locked nodes absorbing +0.03 constraint`,
+    });
+
     for (const id of Object.keys(nodeStates)) {
       if (!nodeStates[id].locked) {
         snapshotBefore(id);
@@ -331,6 +537,13 @@ export function runStep(
 
   // --- update status ---
   sys.status = computeStatus(sys.pressure, thresholds);
+
+  if (sys.status === 'collapsed') {
+    triggeredFailures.push({
+      type: 'collapse',
+      reason: `System pressure ${sys.pressure.toFixed(3)} reached collapse threshold ${thresholds.collapse.toFixed(2)} — simulation has collapsed`,
+    });
+  }
 
   // --- finalise node deltas ---
   const nodeDeltaArr: NodeDelta[] = [];
@@ -371,7 +584,7 @@ export function runStep(
     stepOutcome = outcomePriority[worstIdx];
   }
 
-  // --- build step record ---
+  // --- build step record (compact trace) ---
   const stepRecord: SimulationStep = {
     step: simState.step + 1,
     action: {
@@ -386,12 +599,37 @@ export function runStep(
     timestamp: now,
   };
 
+  // --- build turn log entry (full visibility record) ---
+  const turnLogEntry: TurnLogEntry = {
+    step: simState.step + 1,
+    timestamp: now,
+    perceived_state: perceivedState,
+    actual_state: {
+      node_states: nodeStatesBefore,
+      system: systemBefore,
+    },
+    selected_action: {
+      source_node_id: action.source_node_id,
+      actor_leverage: actorLeverage,
+    },
+    propagation_result: {
+      outcome: stepOutcome,
+      reason: reasonForStepOutcome(stepOutcome, sys),
+      edge_results: edgeResults,
+    },
+    recovery_capacity_change: sys.recovery_capacity - systemBefore.recovery_capacity,
+    pressure_change: sys.pressure - systemBefore.pressure,
+    constraint_change: sys.constraint - systemBefore.constraint,
+    triggered_failures: triggeredFailures,
+  };
+
   return {
     ...simState,
     step: simState.step + 1,
     system: sys,
     node_states: nodeStates,
     trace: [...simState.trace, stepRecord],
+    turn_log: [...(simState.turn_log ?? []), turnLogEntry],
     status: sys.status,
     updatedAt: now,
   };
