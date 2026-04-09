@@ -3,6 +3,7 @@ import Layout from './components/Layout';
 import SimulationEngine from './pages/SimulationEngine';
 import ResearchWorkbench from './pages/ResearchWorkbench';
 import ManualPlay from './pages/ManualPlay';
+import Debrief from './pages/Debrief';
 
 function App() {
   return (
@@ -12,6 +13,7 @@ function App() {
         <Route path="/simulation" element={<SimulationEngine />} />
         <Route path="/research" element={<ResearchWorkbench />} />
         <Route path="/manual-play" element={<ManualPlay />} />
+        <Route path="/debrief/:simId" element={<Debrief />} />
       </Routes>
     </Layout>
   );
