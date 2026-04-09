@@ -1,0 +1,316 @@
+version: "1.0"
+name: RiverThorn Simulation Engine
+description: >
+  Causal propagation engine where propagation is governed by actor leverage,
+  node constraint, edge propagation cost, and global pressure.
+  Propagation can fail EVEN when the action is formally correct.
+
+# ---------------------------------------------------------------------------
+# SYSTEM VARIABLES
+# ---------------------------------------------------------------------------
+system_variables:
+  pressure:
+    type: float
+    range: [0.0, 1.0]
+    default: 0.1
+    description: >
+      Global systemic pressure. Recomputed each step as the mean of all node
+      constraint_levels. High pressure makes propagation harder and can trigger
+      cascade or collapse modes.
+
+  constraint:
+    type: float
+    range: [0.0, 1.0]
+    default: 0.1
+    description: >
+      Global constraint level — a snapshot alias for system.pressure after the
+      step's pressure recompute. Exposed separately for readability.
+
+  recovery_capacity:
+    type: float
+    range: [0.0, 1.0]
+    default: 0.8
+    description: >
+      The system's current ability to absorb and recover from failed
+      propagations. Decreases on failure, increases on success. Used in the
+      failure-probability formula.
+
+  thresholds:
+    lock:
+      type: float
+      default: 0.7
+      description: >
+        A node becomes locked when its constraint_level >= this value.
+        Locked nodes cannot receive or forward propagation.
+    cascade:
+      type: float
+      default: 0.6
+      description: >
+        When system pressure >= cascade threshold the simulation enters cascade
+        mode. In cascade, every failed propagation also adds residual constraint
+        to all non-locked adjacent nodes.
+    collapse:
+      type: float
+      default: 0.9
+      description: >
+        When system pressure >= collapse threshold the system has collapsed.
+        No further propagation is possible; all remaining steps are no-ops.
+
+# ---------------------------------------------------------------------------
+# NODE MODEL
+# ---------------------------------------------------------------------------
+node_model:
+  description: >
+    Every node in the causal graph carries both structural metadata (id, label,
+    type, position, description) and live simulation state (stability,
+    constraint_level, locked, actor_leverage).
+  fields:
+    id:
+      type: string
+    label:
+      type: string
+    type:
+      type: enum
+      values: [state, event, condition, actor]
+    description:
+      type: string
+    position:
+      type: object
+      fields: { x: float, y: float }
+    actor_leverage:
+      type: float
+      range: [0.0, 1.0]
+      default: 0.5
+      description: >
+        The leverage an actor has when initiating propagation FROM this node.
+        Higher leverage raises propagation potential.
+    stability:
+      type: float
+      range: [0.0, 1.0]
+      default: 1.0
+      description: >
+        Current structural stability. Decreases when constraint accumulates or
+        when propagation fails at this node. Does not directly block propagation
+        but reflects node health.
+    constraint_level:
+      type: float
+      range: [0.0, 1.0]
+      default: 0.0
+      description: >
+        Accumulated resistance at this node. Increases on failed propagation and
+        distortion events. When constraint_level >= thresholds.lock the node
+        becomes locked.
+    locked:
+      type: boolean
+      default: false
+      description: >
+        A locked node cannot receive propagation and cannot act as a source.
+        Set automatically when constraint_level >= thresholds.lock.
+
+# ---------------------------------------------------------------------------
+# EDGE MODEL
+# ---------------------------------------------------------------------------
+edge_model:
+  description: >
+    Edges model directed causal channels between nodes. They carry a
+    propagation cost and an openness — NOT a simple binary weight.
+  fields:
+    id:
+      type: string
+    source:
+      type: string
+      description: ID of the source node.
+    target:
+      type: string
+      description: ID of the target node.
+    label:
+      type: string
+    propagation_cost:
+      type: float
+      range: [0.0, 1.0]
+      default: 0.3
+      description: >
+        The cost to propagate through this edge. Directly reduces propagation
+        potential. Higher cost = harder to traverse.
+    openness:
+      type: float
+      range: [0.0, 1.0]
+      default: 0.7
+      description: >
+        How permissive this causal channel is. Scales the raw propagation
+        potential (P_raw). An openness of 0 blocks all propagation regardless
+        of potential; 1.0 passes full potential.
+
+# ---------------------------------------------------------------------------
+# PROPAGATION ALGORITHM
+# ---------------------------------------------------------------------------
+propagation_algorithm:
+  description: >
+    Each simulation step is driven by one ACTION: the actor nominates a source
+    node and an optional actor_leverage override. The engine attempts to
+    propagate causality along every outgoing edge from that source.
+
+  action:
+    fields:
+      source_node_id:
+        type: string
+        description: The node from which the actor initiates propagation.
+      actor_leverage:
+        type: float
+        range: [0.0, 1.0]
+        description: >
+          Leverage for this specific action. Defaults to the source node's
+          actor_leverage if not supplied.
+
+  potential_formula:
+    description: >
+      Computed per (source → target) edge:
+        P_raw = actor_leverage - target.constraint_level - edge.propagation_cost - system.pressure
+        P     = P_raw * edge.openness
+    note: >
+      P is a continuous value. Only its sign and magnitude determine outcome —
+      there is NO fixed threshold like "strength > 0.5".
+
+  failure_probability:
+    formula: max(0, system.pressure - system.recovery_capacity) * 0.4
+    description: >
+      Even when P > 0 (positive potential), the system can still fail the
+      propagation due to the gap between current pressure and recovery capacity.
+      The wider the gap, the higher the chance of failure.
+
+  outcome_rules:
+    success:
+      condition: P > 0 AND random() >= failure_probability
+      effects:
+        - target.stability:       min(1.0, stability + P * 0.15)
+        - target.constraint_level: max(0.0, constraint_level - 0.05)
+        - system.recovery_capacity: min(1.0, recovery_capacity + 0.02)
+        - system.pressure:        decreases via recompute
+
+    propagation_failure:
+      condition: >
+        (P <= 0 AND target.constraint_level >= thresholds.lock * 0.85)
+        OR (P > 0 AND random() < failure_probability)
+      description: >
+        Propagation did not occur. The action was structurally or statistically
+        blocked. Nothing moves forward.
+      effects:
+        - target.constraint_level: min(1.0, constraint_level + 0.05)
+        - system.recovery_capacity: max(0.0, recovery_capacity - 0.03)
+
+    correction_failure:
+      condition: >
+        P <= 0 AND system.pressure >= thresholds.cascade * 0.8
+        AND target.constraint_level < thresholds.lock * 0.85
+      description: >
+        The action was correct but system pressure is so high it inverted or
+        neutralised the correction. The intended change does not land.
+      effects:
+        - target.constraint_level: min(1.0, constraint_level + 0.08)
+        - target.stability:        max(0.0, stability - 0.05)
+        - system.pressure:         pressure + 0.03 (before recompute)
+
+    distortion_failure:
+      condition: >
+        P <= 0 AND system.pressure < thresholds.cascade * 0.8
+        AND target.constraint_level < thresholds.lock * 0.85
+      description: >
+        Propagation occurred but was distorted — energy was consumed without
+        achieving the intended causal outcome. Adjacent nodes also absorb spill.
+      effects:
+        - target.constraint_level: min(1.0, constraint_level + 0.10)
+        - target.stability:        max(0.0, stability - 0.03)
+        - adjacent nodes (targets of target): constraint_level += 0.02
+
+  post_edge_processing:
+    lock_check:
+      description: After each edge result, if target.constraint_level >= thresholds.lock → target.locked = true.
+
+    cascade_spread:
+      condition: system.pressure >= thresholds.cascade
+      effects:
+        - All non-locked nodes: constraint_level += 0.03
+        - system.recovery_capacity: max(0.0, recovery_capacity - 0.05)
+
+    system_pressure_recompute:
+      formula: mean(node.constraint_level for node in graph.nodes)
+      description: Recomputed after all edges for the step have been processed.
+
+  step_outcome:
+    description: >
+      The overall outcome of the step is the "worst" edge outcome in priority:
+      collapse > cascade > distortion_failure > correction_failure >
+      propagation_failure > success.
+    values:
+      - success
+      - propagation_failure
+      - correction_failure
+      - distortion_failure
+      - cascade
+      - collapse
+
+  status_transitions:
+    active:
+      condition: system.pressure < thresholds.cascade
+    cascade:
+      condition: system.pressure >= thresholds.cascade AND < thresholds.collapse
+    collapsed:
+      condition: system.pressure >= thresholds.collapse
+
+# ---------------------------------------------------------------------------
+# STEP RECORD
+# ---------------------------------------------------------------------------
+step_record:
+  description: Every step is fully recorded for inspection and replay.
+  fields:
+    step:
+      type: integer
+    action:
+      source_node_id: string
+      actor_leverage: float
+    system_state_before:
+      pressure: float
+      constraint: float
+      recovery_capacity: float
+      status: string
+    system_state_after:
+      pressure: float
+      constraint: float
+      recovery_capacity: float
+      status: string
+    edge_results:
+      type: array
+      items:
+        edge_id: string
+        outcome: success | propagation_failure | correction_failure | distortion_failure
+        propagation_potential: float
+        constraint_delta: float
+    node_deltas:
+      type: array
+      items:
+        node_id: string
+        stability_before: float
+        stability_after: float
+        constraint_before: float
+        constraint_after: float
+        locked_before: boolean
+        locked_after: boolean
+    step_outcome:
+      type: enum
+      values: [success, propagation_failure, correction_failure, distortion_failure, cascade, collapse]
+    timestamp:
+      type: string
+
+# ---------------------------------------------------------------------------
+# FAILURE MODES SUMMARY
+# ---------------------------------------------------------------------------
+failure_modes:
+  propagation_failure:
+    trigger: Structural block (high constraint / locked target) or statistical failure from system pressure
+    player_experience: "The action didn't reach its target."
+  correction_failure:
+    trigger: Correct action but system pressure is too high — correction is inverted
+    player_experience: "The action made things worse."
+  distortion_failure:
+    trigger: Action reached target but was distorted by moderate constraint
+    player_experience: "Something happened, but not what was intended."

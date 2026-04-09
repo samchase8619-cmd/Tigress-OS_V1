@@ -3,12 +3,22 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   CreateGraphBodySchema,
   UpdateGraphBodySchema,
+  SimulateBodySchema,
   CausalGraph,
   SimulationState,
 } from '../validation/schemas';
 import { readAll, readOne, writeOne, deleteOne } from '../storage/jsonStorage';
+import {
+  buildInitialSystemState,
+  buildInitialNodeStates,
+  runStep,
+} from '../engine/riverthornEngine';
 
 export const simulationRouter = Router();
+
+// ---------------------------------------------------------------------------
+// Graph CRUD
+// ---------------------------------------------------------------------------
 
 simulationRouter.get('/graphs', (_req: Request, res: Response) => {
   const graphs = readAll<CausalGraph>('graphs');
@@ -74,6 +84,10 @@ simulationRouter.delete('/graphs/:id', (req: Request, res: Response) => {
   res.status(204).send();
 });
 
+// ---------------------------------------------------------------------------
+// Simulation — step execution
+// ---------------------------------------------------------------------------
+
 simulationRouter.post('/graphs/:id/simulate', (req: Request, res: Response) => {
   const graph = readOne<CausalGraph>('graphs', req.params.id);
   if (!graph) {
@@ -81,54 +95,43 @@ simulationRouter.post('/graphs/:id/simulate', (req: Request, res: Response) => {
     return;
   }
 
-  const simId = req.body.simId as string | undefined;
-  let simState: SimulationState | null = simId ? readOne<SimulationState>('simulations', simId) : null;
+  const parse = SimulateBodySchema.safeParse(req.body);
+  if (!parse.success) {
+    res.status(400).json({ error: parse.error.flatten() });
+    return;
+  }
 
+  const { source_node_id, actor_leverage, simId } = parse.data;
   const now = new Date().toISOString();
 
+  // Load existing simulation or create a fresh one
+  let simState: SimulationState | null =
+    simId ? readOne<SimulationState>('simulations', simId) : null;
+
   if (!simState) {
-    const seedNodes = (req.body.activeNodes as string[] | undefined) ||
-      (graph.nodes.length > 0 ? [graph.nodes[0].id] : []);
     simState = {
       id: uuidv4(),
       graphId: graph.id,
       step: 0,
-      activeNodes: seedNodes,
+      system: buildInitialSystemState(),
+      node_states: buildInitialNodeStates(graph.nodes),
       trace: [],
+      status: 'active',
       createdAt: now,
       updatedAt: now,
     };
   }
 
-  const currentActive = simState.activeNodes;
-  const firedEdges: string[] = [];
-  const nextActive: Set<string> = new Set();
+  // Execute one propagation step via the RiverThorn engine
+  const updated = runStep(graph, simState, { source_node_id, actor_leverage });
 
-  for (const edge of graph.edges) {
-    if (currentActive.includes(edge.source) && edge.strength > 0.5) {
-      firedEdges.push(edge.id);
-      nextActive.add(edge.target);
-    }
-  }
-
-  const newStep = {
-    step: simState.step + 1,
-    activatedNodes: Array.from(nextActive),
-    firedEdges,
-    timestamp: now,
-  };
-
-  const updatedSim: SimulationState = {
-    ...simState,
-    step: simState.step + 1,
-    activeNodes: nextActive.size > 0 ? Array.from(nextActive) : currentActive,
-    trace: [...simState.trace, newStep],
-    updatedAt: now,
-  };
-
-  writeOne('simulations', updatedSim.id, updatedSim);
-  res.json(updatedSim);
+  writeOne('simulations', updated.id, updated);
+  res.json(updated);
 });
+
+// ---------------------------------------------------------------------------
+// Simulation — query / delete
+// ---------------------------------------------------------------------------
 
 simulationRouter.get('/graphs/:id/simulations', (req: Request, res: Response) => {
   const allSims = readAll<SimulationState>('simulations');
@@ -151,6 +154,6 @@ simulationRouter.delete('/simulations/:simId', (req: Request, res: Response) => 
     res.status(404).json({ error: 'Simulation not found' });
     return;
   }
-  deleteOne('simulations', req.params.simId);
+  deleteOne('simulations', sim.id);
   res.status(204).send();
 });

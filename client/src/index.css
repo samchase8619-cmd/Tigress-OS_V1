@@ -651,3 +651,135 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #444;
 }
+
+/* -------------------------------------------------------------------------
+   RiverThorn Engine — new UI components
+   --------------------------------------------------------------------- */
+
+/* System Gauge */
+.system-gauge {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.gauge-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+}
+.gauge-row--small { margin-top: 6px; }
+.gauge-label { color: var(--text-secondary); }
+.gauge-value { font-weight: 700; font-size: 13px; }
+.gauge-bar-bg {
+  position: relative;
+  height: 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  overflow: visible;
+}
+.gauge-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+.gauge-threshold {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 12px;
+  background: #f97316;
+  border-radius: 1px;
+}
+.gauge-threshold--collapse { background: #dc2626; }
+
+/* Status badge */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+.status-badge--cascade { background: rgba(249,115,22,.2); color: #f97316; }
+.status-badge--collapsed { background: rgba(220,38,38,.2); color: #dc2626; }
+
+/* Compact form group (for in-panel controls) */
+.form-group--compact {
+  margin-bottom: 8px;
+}
+.form-group--compact label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+}
+.form-group--compact select,
+.form-group--compact input[type="range"] {
+  width: 100%;
+  font-size: 12px;
+}
+.form-group--compact select {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+.form-group--compact input[type="range"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Trace outcome label */
+.trace-outcome {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+.trace-sub {
+  display: block;
+  font-size: 10px;
+  padding-left: 16px;
+}
+
+/* Node stat bars */
+.node-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.stat-row {
+  display: grid;
+  grid-template-columns: 70px 1fr 36px;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.mini-bar {
+  height: 6px;
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.mini-bar > div {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+/* Lock warning */
+.lock-warning {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #9ca3af;
+  font-style: italic;
+}

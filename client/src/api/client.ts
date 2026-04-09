@@ -26,10 +26,15 @@ export const deleteGraph = (id: string) =>
   request<void>(`/simulation/graphs/${id}`, { method: 'DELETE' });
 
 // Simulations
-export const runStep = (graphId: string, activeNodes?: string[], simId?: string) =>
+export const runStep = (
+  graphId: string,
+  source_node_id: string,
+  actor_leverage?: number,
+  simId?: string
+) =>
   request<SimulationState>(`/simulation/graphs/${graphId}/simulate`, {
     method: 'POST',
-    body: JSON.stringify({ activeNodes, simId }),
+    body: JSON.stringify({ source_node_id, actor_leverage, simId }),
   });
 export const listSimulations = (graphId: string) =>
   request<SimulationState[]>(`/simulation/graphs/${graphId}/simulations`);

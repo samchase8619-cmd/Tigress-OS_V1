@@ -43,8 +43,12 @@ export function readAll<T>(subdir: string): T[] {
     if (f.includes(path.sep) || f.includes('/')) return null;
     const filePath = path.resolve(dirPath, f);
     if (!filePath.startsWith(dirPath + path.sep)) return null;
-    const content = fs.readFileSync(filePath, 'utf-8');
-    return JSON.parse(content) as T;
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      return JSON.parse(content) as T;
+    } catch {
+      return null;
+    }
   }).filter((item): item is T => item !== null);
 }
 
