@@ -38,10 +38,17 @@ export const runStep = (
   });
 export const listSimulations = (graphId: string) =>
   request<SimulationState[]>(`/simulation/graphs/${graphId}/simulations`);
+export const listAllSimulations = () =>
+  request<SimulationState[]>('/simulation/simulations');
 export const getSimulation = (id: string) =>
   request<SimulationState>(`/simulation/simulations/${id}`);
 export const deleteSimulation = (id: string) =>
   request<void>(`/simulation/simulations/${id}`, { method: 'DELETE' });
+export const labelSimulation = (id: string, label: string) =>
+  request<SimulationState>(`/simulation/simulations/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ label }),
+  });
 export const getTurnLog = (simId: string) =>
   request<TurnLogEntry[]>(`/simulation/simulations/${simId}/turn_log`);
 export const runTestCases = () =>

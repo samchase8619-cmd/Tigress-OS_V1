@@ -23,6 +23,7 @@ import type {
   PerceivedNodeState,
   PerceivedSystemState,
   TriggeredFailure,
+  IrreversibleEvent,
   TurnLogEntry,
 } from '../validation/schemas';
 
@@ -135,6 +136,94 @@ function buildPerceivedState(
   return {
     node_states: perceived,
     system: buildPerceivedSystemState(sys),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Distortion detection — per-turn, deterministic, AEIC-driven
+// ---------------------------------------------------------------------------
+
+type DistortionPhase = 'perception' | 'targeting' | 'effect';
+
+/**
+ * PERCEPTION distortion: the AEIC-filtered view of the primary outgoing
+ * edge's target flips the success/failure prediction.
+ *
+ * Fires when:
+ *   P_perceived > 0  BUT  P_actual <= 0   (actor thinks success, engine fails)
+ *   OR
+ *   P_perceived <= 0 BUT  P_actual > 0    (actor thinks fail, engine succeeds)
+ */
+function detectPerceptionDistortion(
+  primaryEdge: CausalEdge | undefined,
+  nodeStates: Record<string, NodeState>,
+  actorLeverage: number,
+  systemBefore: SystemState
+): boolean {
+  if (!primaryEdge) return false;
+  const target = nodeStates[primaryEdge.target];
+  if (!target || target.locked) return false;
+
+  const perceivedConstraint = buildPerceivedNodeState(target).constraint_level;
+  const perceivedPressure = buildPerceivedSystemState(systemBefore).pressure;
+
+  const pPerceived =
+    (actorLeverage - perceivedConstraint - primaryEdge.propagation_cost - perceivedPressure) *
+    primaryEdge.openness;
+  const pActual =
+    (actorLeverage - target.constraint_level - primaryEdge.propagation_cost - systemBefore.pressure) *
+    primaryEdge.openness;
+
+  return (pPerceived > 0 && pActual <= 0) || (pPerceived <= 0 && pActual > 0);
+}
+
+/**
+ * TARGETING distortion: the node the actor would naturally choose as primary
+ * target (lowest perceived constraint among reachable targets) differs from
+ * the actual best target (lowest actual constraint).
+ *
+ * Returns the perceived and actual "best" target node IDs as well.
+ */
+function detectTargetingDistortion(
+  outgoing: CausalEdge[],
+  nodeStates: Record<string, NodeState>
+): {
+  fires: boolean;
+  perceived_target: string | undefined;
+  actual_target: string | undefined;
+} {
+  if (outgoing.length === 0) {
+    return { fires: false, perceived_target: undefined, actual_target: undefined };
+  }
+  if (outgoing.length === 1) {
+    return { fires: false, perceived_target: outgoing[0].target, actual_target: outgoing[0].target };
+  }
+
+  let perceivedBest: string | undefined;
+  let perceivedMin = Infinity;
+  let actualBest: string | undefined;
+  let actualMin = Infinity;
+
+  for (const edge of outgoing) {
+    const target = nodeStates[edge.target];
+    if (!target || target.locked) continue;
+
+    const perceived = buildPerceivedNodeState(target).constraint_level;
+    // First-edge tiebreaker: only replace when strictly less
+    if (perceived < perceivedMin) {
+      perceivedMin = perceived;
+      perceivedBest = edge.target;
+    }
+    if (target.constraint_level < actualMin) {
+      actualMin = target.constraint_level;
+      actualBest = edge.target;
+    }
+  }
+
+  return {
+    fires: perceivedBest !== undefined && actualBest !== undefined && perceivedBest !== actualBest,
+    perceived_target: perceivedBest,
+    actual_target: actualBest,
   };
 }
 
@@ -264,6 +353,7 @@ export function runStep(
         type: 'collapse',
         reason: `System pressure ${simState.system.pressure.toFixed(3)} >= collapse threshold ${thresholds.collapse.toFixed(2)}`,
       }],
+      distortion_phases: [],
     };
 
     const collapseStep: SimulationStep = {
@@ -281,6 +371,7 @@ export function runStep(
       step: simState.step + 1,
       trace: [...simState.trace, collapseStep],
       turn_log: [...(simState.turn_log ?? []), turnEntry],
+      irreversible_events: [...(simState.irreversible_events ?? [])],
       updatedAt: now,
     };
   }
@@ -339,6 +430,7 @@ export function runStep(
       pressure_change: 0,
       constraint_change: 0,
       triggered_failures: triggeredFailures,
+      distortion_phases: [],
     };
 
     const blockedStep: SimulationStep = {
@@ -356,6 +448,7 @@ export function runStep(
       step: simState.step + 1,
       trace: [...simState.trace, blockedStep],
       turn_log: [...(simState.turn_log ?? []), turnEntry],
+      irreversible_events: [...(simState.irreversible_events ?? [])],
       updatedAt: now,
     };
   }
@@ -364,6 +457,19 @@ export function runStep(
   const outgoing: CausalEdge[] = graph.edges.filter(
     (e: CausalEdge) => e.source === action.source_node_id
   );
+
+  // --- detect distortion phases BEFORE processing edges (uses before-state) ---
+  const primaryEdge: CausalEdge | undefined = outgoing.find(
+    (e) => !!(nodeStates[e.target]) && !nodeStates[e.target].locked
+  );
+  const perceptionFires = detectPerceptionDistortion(
+    primaryEdge,
+    nodeStates,
+    actorLeverage,
+    systemBefore
+  );
+  const { fires: targetingFires, perceived_target, actual_target } =
+    detectTargetingDistortion(outgoing, nodeStates);
 
   const edgeResults: EdgeResult[] = [];
   const nodeDeltaMap: Map<string, NodeDelta> = new Map();
@@ -480,6 +586,7 @@ export function runStep(
         type: outcome,
         edge_id: edge.id,
         target_node_id: targetId,
+        distortion_phase: outcome === 'distortion_failure' ? 'effect' : undefined,
         reason: reasonForEdgeOutcome(
           outcome,
           potential,
@@ -494,7 +601,7 @@ export function runStep(
       });
     }
 
-    // Lock check
+    // Lock check — also records as irreversible event
     if (target.constraint_level >= thresholds.lock) {
       target.locked = true;
     }
@@ -514,10 +621,17 @@ export function runStep(
   sys.constraint = sys.pressure;
 
   // --- cascade spread ---
+  const newIrreversibleEvents: IrreversibleEvent[] = [];
+
   if (sys.pressure >= thresholds.cascade) {
     triggeredFailures.push({
       type: 'cascade',
       reason: `System pressure ${sys.pressure.toFixed(3)} >= cascade threshold ${thresholds.cascade.toFixed(2)} — all non-locked nodes absorbing +0.03 constraint`,
+    });
+    newIrreversibleEvents.push({
+      type: 'cascade_triggered',
+      turn: simState.step + 1,
+      reason: `System pressure ${sys.pressure.toFixed(3)} reached cascade threshold ${thresholds.cascade.toFixed(2)}`,
     });
 
     for (const id of Object.keys(nodeStates)) {
@@ -535,6 +649,19 @@ export function runStep(
     sys.constraint = sys.pressure;
   }
 
+  // --- accumulate node-lock irreversible events ---
+  for (const id of Object.keys(nodeStates)) {
+    const wasLocked = nodeStatesBefore[id]?.locked ?? false;
+    if (!wasLocked && nodeStates[id].locked) {
+      newIrreversibleEvents.push({
+        type: 'node_locked',
+        node_id: id,
+        turn: simState.step + 1,
+        reason: `Node '${id}' constraint_level reached lock threshold ${thresholds.lock.toFixed(2)}`,
+      });
+    }
+  }
+
   // --- update status ---
   sys.status = computeStatus(sys.pressure, thresholds);
 
@@ -542,6 +669,35 @@ export function runStep(
     triggeredFailures.push({
       type: 'collapse',
       reason: `System pressure ${sys.pressure.toFixed(3)} reached collapse threshold ${thresholds.collapse.toFixed(2)} — simulation has collapsed`,
+    });
+    newIrreversibleEvents.push({
+      type: 'system_collapsed',
+      turn: simState.step + 1,
+      reason: `System pressure ${sys.pressure.toFixed(3)} reached collapse threshold ${thresholds.collapse.toFixed(2)}`,
+    });
+  }
+
+  // --- add perception and targeting distortion triggered-failure records ---
+  if (perceptionFires) {
+    triggeredFailures.push({
+      type: 'distortion_failure',
+      distortion_phase: 'perception',
+      target_node_id: primaryEdge?.target,
+      reason:
+        `AEIC perception flip: actor's perceived propagation potential for edge to '${primaryEdge?.target}' ` +
+        `has the opposite sign to the actual potential — ` +
+        `actor's success prediction is inverted by AEIC rounding`,
+    });
+  }
+  if (targetingFires) {
+    triggeredFailures.push({
+      type: 'distortion_failure',
+      distortion_phase: 'targeting',
+      target_node_id: actual_target,
+      reason:
+        `AEIC targeting mismatch: actor perceives '${perceived_target}' as best target ` +
+        `(lowest perceived constraint) but actual best target is '${actual_target}' ` +
+        `(lower actual constraint that AEIC rounds to same or higher perceived value)`,
     });
   }
 
@@ -581,7 +737,20 @@ export function runStep(
       const idx = outcomePriority.indexOf(er.outcome);
       if (idx > worstIdx) worstIdx = idx;
     }
+    // Perception or targeting distortion elevates outcome to distortion_failure
+    if (perceptionFires || targetingFires) {
+      const distortionIdx = outcomePriority.indexOf('distortion_failure');
+      if (distortionIdx > worstIdx) worstIdx = distortionIdx;
+    }
     stepOutcome = outcomePriority[worstIdx];
+  }
+
+  // --- assemble distortion phases ---
+  const distortionPhases: Array<'perception' | 'targeting' | 'effect'> = [];
+  if (perceptionFires) distortionPhases.push('perception');
+  if (targetingFires) distortionPhases.push('targeting');
+  if (edgeResults.some((er) => er.outcome === 'distortion_failure')) {
+    distortionPhases.push('effect');
   }
 
   // --- build step record (compact trace) ---
@@ -621,6 +790,9 @@ export function runStep(
     pressure_change: sys.pressure - systemBefore.pressure,
     constraint_change: sys.constraint - systemBefore.constraint,
     triggered_failures: triggeredFailures,
+    perceived_target,
+    actual_target,
+    distortion_phases: distortionPhases,
   };
 
   return {
@@ -630,6 +802,7 @@ export function runStep(
     node_states: nodeStates,
     trace: [...simState.trace, stepRecord],
     turn_log: [...(simState.turn_log ?? []), turnLogEntry],
+    irreversible_events: [...(simState.irreversible_events ?? []), ...newIrreversibleEvents],
     status: sys.status,
     updatedAt: now,
   };

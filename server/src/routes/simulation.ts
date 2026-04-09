@@ -123,6 +123,7 @@ simulationRouter.post('/graphs/:id/simulate', (req: Request, res: Response) => {
       node_states: buildInitialNodeStates(graph.nodes),
       trace: [],
       turn_log: [],
+      irreversible_events: [],
       status: 'active',
       createdAt: now,
       updatedAt: now,
@@ -180,6 +181,36 @@ simulationRouter.delete('/simulations/:simId', (req: Request, res: Response) => 
   res.status(204).send();
 });
 
+/**
+ * GET /api/simulation/simulations
+ * Returns all persisted simulation states (summary-level for listing/save-load).
+ */
+simulationRouter.get('/simulations', (_req: Request, res: Response) => {
+  const all = readAll<SimulationState>('simulations');
+  res.json(all);
+});
+
+/**
+ * PATCH /api/simulation/simulations/:simId
+ * Updates the simulation label (save-name). Also allows resetting the label.
+ * Body: { label?: string }
+ */
+simulationRouter.patch('/simulations/:simId', (req: Request, res: Response) => {
+  const sim = readOne<SimulationState>('simulations', req.params.simId);
+  if (!sim) {
+    res.status(404).json({ error: 'Simulation not found' });
+    return;
+  }
+  const { label } = req.body as { label?: string };
+  const updated: SimulationState = {
+    ...sim,
+    label: typeof label === 'string' ? label : sim.label,
+    updatedAt: new Date().toISOString(),
+  };
+  writeOne('simulations', sim.id, updated);
+  res.json(updated);
+});
+
 // ---------------------------------------------------------------------------
 // Test-case runner — deterministic, in-memory, never persisted
 // ---------------------------------------------------------------------------
@@ -214,6 +245,7 @@ function buildTestSimState(
     node_states: nodeStates,
     trace: [],
     turn_log: [],
+    irreversible_events: [],
     status: 'active',
     createdAt: now,
     updatedAt: now,
@@ -430,77 +462,98 @@ simulationRouter.post('/test-case', (_req: Request, res: Response) => {
   };
 
   // =========================================================================
-  // CASE 3: DISTORTION FAILURE
-  // Setup: actor leverage = 0.5 (moderate), target constraint_level = 0.43.
-  //   Pressure = 0.43 (below cascade×0.8 = 0.48 so NOT a correction failure).
-  //   Target constraint < lock×0.85 (0.595) so NOT a propagation failure.
-  //   → distortion_failure: action reaches the node but is absorbed, not causal.
+  // CASE 3: DISTORTION FAILURE — all three distortion phases demonstrated
   //
-  //   Nodes: n1(source, constraint=0.43), n2(target, constraint=0.43), n3(downstream, constraint=0.1)
-  //   Mean pressure = (0.43+0.43+0.1)/3 ≈ 0.32 — I'll fix it at 0.43 manually so the
-  //   formula clearly shows the distortion zone.
+  // Graph:
+  //   n1 (source/actor,  constraint=0.00, leverage=0.95)
+  //   n2 (target A,      constraint=0.47)  → perceived=0.45  (rounds down)
+  //   n3 (downstream/n2, constraint=0.05)
+  //   n4 (target B,      constraint=0.43)  → perceived=0.45  (rounds up — same as n2!)
   //
-  //   P_raw = 0.5 - 0.43 - 0.3 - 0.43 = -0.66
-  //   P     = -0.66 * 0.7 = -0.462   (P <= 0)
-  //   classifyFailure: target.constraint(0.43) < 0.595 AND pressure(0.43) < 0.48
-  //                    → distortion_failure
+  // Edges: n1→n2 (cost=0.03, open=0.80)
+  //        n1→n4 (cost=0.03, open=0.80)   ← second direct target
+  //        n2→n3 (cost=0.20, open=0.60)   ← downstream of n2
   //
-  // AEIC discrepancy: actual constraint=0.43 → perceived=0.45 (rounds up).
-  //   Actor sees target at 0.45 and pressure at 0.45 — both over-estimated.
-  //   They calibrate their action for a harder target than exists, misapply leverage.
+  // System pressure = 0.47  → perceived pressure = 0.45 (rounds down)
+  //
+  // PHASE 1 — PERCEPTION distortion (n1→n2, primary edge):
+  //   P_perceived = (0.95 − 0.45 − 0.03 − 0.45) × 0.80 = +0.016  (actor thinks success)
+  //   P_actual    = (0.95 − 0.47 − 0.03 − 0.47) × 0.80 = −0.016  (engine actually fails)
+  //   Sign flip → perception distortion fires.
+  //
+  // PHASE 2 — TARGETING distortion (n1→n2 vs n1→n4):
+  //   n2.perceived=0.45, n4.perceived=0.45  → TIE → actor picks n2 (first edge)
+  //   n2.actual=0.47, n4.actual=0.43        → engine best-target = n4 (lower actual)
+  //   perceived_target ≠ actual_target → targeting distortion fires.
+  //
+  // PHASE 3 — EFFECT distortion (n1→n2, potential<0):
+  //   P_actual = −0.016; classifyFailure: constraint(0.47)<lock×0.85(0.595)
+  //   AND pressure(0.47)<cascade×0.8(0.48) → distortion_failure
+  //   n2.constraint += 0.10; n3.constraint += 0.02 (spill)  ← effect distortion
+  //
+  // n1→n4: P_actual = +0.016 > 0; failProb=max(0,0.47−0.60)×0.4=0; roll≥0 → SUCCESS
+  //
+  // Worst edge outcome: distortion_failure (n2) > success (n4) → step = distortion_failure ✓
   // =========================================================================
   const g3Nodes = [
-    makeNode('n1', 'Actor (moderate leverage)', 'actor', 0.5, 0.7, 0.43),
-    makeNode('n2', 'Distorted target', 'state', 0.5, 0.8, 0.43),
-    makeNode('n3', 'Downstream node (spill)', 'state', 0.5, 1.0, 0.1),
+    makeNode('n1', 'Actor (source)',              'actor', 0.95, 1.0, 0.0),
+    makeNode('n2', 'Target A (perceived = actual same 0.45, actual=0.47)', 'state', 0.5, 0.8, 0.47),
+    makeNode('n3', 'Downstream of Target A',       'state', 0.5, 1.0, 0.05),
+    makeNode('n4', 'Target B (actual=0.43→best actual, tie on perceived)', 'state', 0.5, 0.8, 0.43),
   ];
   const g3Edges = [
-    makeEdge('e1', 'n1', 'n2', 'apply correction', 0.3, 0.7),
-    makeEdge('e2', 'n2', 'n3', 'downstream channel', 0.2, 0.6),
+    makeEdge('e1', 'n1', 'n2', 'primary action', 0.03, 0.80),
+    makeEdge('e2', 'n1', 'n4', 'secondary action', 0.03, 0.80),
+    makeEdge('e3', 'n2', 'n3', 'downstream channel', 0.20, 0.60),
   ];
   const graph3: CausalGraph = {
-    id: 'tc-3', name: 'Distortion Failure Test', description: '',
+    id: 'tc-3', name: 'Distortion Failure Test (Triple-Phase)', description: '',
     nodes: g3Nodes, edges: g3Edges,
     createdAt: now, updatedAt: now,
   };
-  // Fix system pressure to 0.43 (in the distortion zone: below cascade×0.8=0.48)
+  // Manually set system pressure = 0.47 (perceived 0.45 after AEIC rounding)
   const sim3 = buildTestSimState(graph3,
-    { pressure: 0.43, constraint: 0.43, recovery_capacity: 0.6 },
+    { pressure: 0.47, constraint: 0.47, recovery_capacity: 0.60 },
     {}
   );
-  const afterStep3 = runStep(graph3, sim3, { source_node_id: 'n1', actor_leverage: 0.5 }, FIXED_RNG);
+  const afterStep3 = runStep(graph3, sim3, { source_node_id: 'n1', actor_leverage: 0.95 }, FIXED_RNG);
   const tl3 = afterStep3.turn_log[0];
   const actualOutcome3 = tl3?.propagation_result.outcome ?? 'unknown';
 
   const case3: TestCaseResult = {
     case_id: 'distortion_failure',
     description:
-      'Actor has moderate leverage (0.50) against a target with constraint_level 0.43. ' +
-      'System pressure (0.43) is below the correction-failure threshold (0.48) and the target ' +
-      'is not near lock. The action physically reaches the target but the energy is absorbed ' +
-      'without causal effect — it distorts rather than propagates. ' +
-      'Downstream node n3 receives a +0.02 constraint spill. ' +
-      'AEIC overestimates both constraint and pressure (0.43 → 0.45), causing the actor ' +
-      'to believe the environment is harder than it is and misapply their leverage.',
+      'All three distortion phases fire simultaneously. ' +
+      'PERCEPTION: AEIC rounds both n2.constraint (0.47→0.45) and pressure (0.47→0.45), causing ' +
+      'actor to predict P=+0.016 (success) when the actual potential is P=−0.016 (failure). ' +
+      'TARGETING: Both n2 (actual=0.47) and n4 (actual=0.43) appear equally constrained at ' +
+      'perceived=0.45 — the actor cannot distinguish them. The AEIC tie makes n2 seem as ' +
+      'viable as n4, when n4 is actually the easier target. ' +
+      'EFFECT: The n1→n2 action distortion-fails, adding +0.10 to n2 and spilling +0.02 to n3. ' +
+      'n1→n4 succeeds (P_actual=+0.016). Overall step outcome = distortion_failure.',
     setup: {
       nodes: [
-        { id: 'n1', label: 'Actor (moderate leverage)', role: 'source', constraint_level: 0.43, actor_leverage: 0.5, locked: false },
-        { id: 'n2', label: 'Distorted target', role: 'target', constraint_level: 0.43, actor_leverage: 0.5, locked: false },
-        { id: 'n3', label: 'Downstream node (spill)', role: 'downstream', constraint_level: 0.1, actor_leverage: 0.5, locked: false },
+        { id: 'n1', label: 'Actor (source)',   role: 'source',     constraint_level: 0.00, actor_leverage: 0.95, locked: false },
+        { id: 'n2', label: 'Target A',         role: 'target',     constraint_level: 0.47, actor_leverage: 0.5,  locked: false },
+        { id: 'n3', label: 'Downstream of A',  role: 'downstream', constraint_level: 0.05, actor_leverage: 0.5,  locked: false },
+        { id: 'n4', label: 'Target B',         role: 'background', constraint_level: 0.43, actor_leverage: 0.5,  locked: false },
       ],
       edges: [
-        { id: 'e1', source: 'n1', target: 'n2', propagation_cost: 0.3, openness: 0.7 },
-        { id: 'e2', source: 'n2', target: 'n3', propagation_cost: 0.2, openness: 0.6 },
+        { id: 'e1', source: 'n1', target: 'n2', propagation_cost: 0.03, openness: 0.80 },
+        { id: 'e2', source: 'n1', target: 'n4', propagation_cost: 0.03, openness: 0.80 },
+        { id: 'e3', source: 'n2', target: 'n3', propagation_cost: 0.20, openness: 0.60 },
       ],
-      system_pressure: 0.43,
-      recovery_capacity: 0.6,
-      actor_leverage_used: 0.5,
+      system_pressure: 0.47,
+      recovery_capacity: 0.60,
+      actor_leverage_used: 0.95,
       why_this_fails:
-        'P_raw = 0.50 − 0.43 − 0.30 − 0.43 = −0.66; P = −0.66 × 0.7 = −0.462. ' +
-        'P ≤ 0 and target.constraint(0.43) < lock×0.85(0.595) ' +
-        'and pressure(0.43) < cascade×0.8(0.48). ' +
-        'Engine classifies as distortion_failure: energy absorbed without causal propagation; ' +
-        'downstream n3 receives constraint spill.',
+        '[PERCEPTION] P_perceived(n1→n2) = (0.95−0.45−0.03−0.45)×0.80 = +0.016 (actor predicts success). ' +
+        'P_actual(n1→n2) = (0.95−0.47−0.03−0.47)×0.80 = −0.016 (engine fails). ' +
+        'Sign flip fires perception distortion. ' +
+        '[TARGETING] n2.perceived=0.45=n4.perceived — AEIC tie. Actor picks n2 (first edge). ' +
+        'actual best = n4 (0.43 < 0.47). perceived_target≠actual_target fires targeting distortion. ' +
+        '[EFFECT] P_actual<0 on n1→n2; classifyFailure→distortion_failure; ' +
+        'n2.constraint+=0.10, n3.constraint+=0.02 spill.',
       expected_outcome: 'distortion_failure',
     },
     turn_log: afterStep3.turn_log,
@@ -508,32 +561,42 @@ simulationRouter.post('/test-case', (_req: Request, res: Response) => {
     actual_outcome: actualOutcome3,
     cause_explanation: {
       formula_breakdown:
-        'P_raw = actor_leverage(0.50) − target.constraint(0.43) − edge.cost(0.30) − pressure(0.43) = −0.66\n' +
-        'P = P_raw × openness(0.70) = −0.462\n' +
-        'Since P ≤ 0 and target.constraint(0.43) < lock×0.85(0.595) ' +
-        'and pressure(0.43) < cascade×0.8(0.48): outcome = distortion_failure\n' +
-        'Effect: n2.constraint += 0.10, n2.stability −= 0.03, n3.constraint += 0.02 (spill)',
+        '--- PERCEPTION PHASE ---\n' +
+        'P_perceived(n1→n2) = actor(0.95) − perceived_n2_constraint(0.45) − cost(0.03) − perceived_pressure(0.45)\n' +
+        '                   = 0.02; × openness(0.80) = +0.016  ← actor predicts success\n' +
+        'P_actual(n1→n2)    = actor(0.95) − n2.constraint(0.47) − cost(0.03) − pressure(0.47)\n' +
+        '                   = −0.02; × openness(0.80) = −0.016  ← engine fails\n' +
+        'AEIC rounds 0.47 → 0.45 for both n2.constraint and system.pressure (rounds down 4.4→4).\n\n' +
+        '--- TARGETING PHASE ---\n' +
+        'n2.perceived = round(0.47, 0.05) = 0.45\n' +
+        'n4.perceived = round(0.43, 0.05) = 0.45   ← tie! both appear equally constrained\n' +
+        'Actor picks n2 (first edge). Actual best: n4 (0.43 < 0.47). Mismatch fires.\n\n' +
+        '--- EFFECT PHASE ---\n' +
+        'P_actual(n1→n2) = −0.016 → classifyFailure: constraint(0.47)<lock×0.85(0.595) ' +
+        'AND pressure(0.47)<cascade×0.8(0.48) → distortion_failure\n' +
+        'n2.constraint += 0.10 (→0.57); n3.constraint += 0.02 (→0.07) downstream spill\n' +
+        'P_actual(n1→n4) = +0.016 > 0; failProb=0; SUCCESS — n4.constraint −0.05 (→0.38)',
       labeled_cause:
-        'DISTORTION — The action was not strong enough to overcome the combined resistance ' +
-        '(target constraint + edge cost + system pressure). The total resistance (0.43+0.30+0.43=1.16) ' +
-        'exceeds the actor\'s leverage (0.50). The energy is absorbed by the target and radiates ' +
-        'downstream as uncontrolled constraint spill, making the situation worse without ' +
-        'achieving the intended causal change.',
+        'TRIPLE DISTORTION — Three independent AEIC-driven failure modes fire on the same turn. ' +
+        '(1) PERCEPTION: AEIC rounding causes the actor to predict a positive propagation potential ' +
+        'on the n2 edge when the actual potential is negative — the actor\'s success model is wrong. ' +
+        '(2) TARGETING: Both direct targets appear equally constrained under AEIC (0.45 each). The ' +
+        'actor cannot see that n4 is measurably easier (0.43 vs 0.47) and selects n2 by default. ' +
+        '(3) EFFECT: The misdirected n2 action distortion-fails, radiating constraint spill to n3 ' +
+        'without achieving the intended causal change.',
       aeic_discrepancy:
-        'Perceived n2.constraint_level = 0.45 (AEIC rounds 0.43 → 0.45 to nearest 0.05). ' +
-        'Actual n2.constraint_level = 0.43. ' +
-        'Perceived system.pressure = 0.45 (rounds 0.43 → 0.45). ' +
-        'Actual system.pressure = 0.43. ' +
-        'The actor overestimates both the target\'s resistance and system pressure by +0.02 each. ' +
-        'They believe they need leverage > 0.45+0.30+0.45 = 1.20 to succeed — which appears ' +
-        'impossible — when in reality they need > 0.43+0.30+0.43 = 1.16 (still impossible at 0.50, ' +
-        'but the AEIC gap distorts their model of the situation).',
+        'n2.constraint: actual=0.47 → perceived=0.45 (rounds down: 0.47÷0.05=9.4→9×0.05=0.45). ' +
+        'n4.constraint: actual=0.43 → perceived=0.45 (rounds up: 0.43÷0.05=8.6→9×0.05=0.45). ' +
+        'system.pressure: actual=0.47 → perceived=0.45 (same rounding as n2). ' +
+        'Critical: the rounding of n4 UP and n2 DOWN to the same perceived value is the ' +
+        'exact condition for targeting distortion. The AEIC creates a false equivalence between ' +
+        'two targets that are actually 0.04 apart in constraint.',
       recovery_note:
-        'To succeed: raise actor_leverage above target.constraint + edge.cost + pressure = 1.16 ' +
-        '(impossible at max leverage 1.0 with current graph). ' +
-        'Correct path: reduce n2.constraint_level below 0.20 (then P_raw > 0) ' +
-        'OR reduce edge.cost + pressure below leverage−constraint first ' +
-        'OR use a different source node with higher leverage.',
+        'To avoid perception distortion: reduce actual_pressure + n2.constraint below actor_leverage − edge_cost ' +
+        '(need sum < 0.92 for P>0 with leverage=0.95, cost=0.03). ' +
+        'To avoid targeting distortion: reduce n4.constraint to a value that rounds to a different (lower) ' +
+        'perceived bin than n2 (e.g. n4.constraint ≤ 0.40 → perceived=0.40 < n2.perceived=0.45). ' +
+        'To avoid effect distortion: ensure P_actual > 0 on the chosen edge.',
     },
   };
 

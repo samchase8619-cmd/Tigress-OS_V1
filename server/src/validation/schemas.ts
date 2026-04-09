@@ -133,6 +133,27 @@ export const TriggeredFailureSchema = z.object({
   edge_id: z.string().optional(),
   /** Which target node was affected (absent for system-level events). */
   target_node_id: z.string().optional(),
+  /**
+   * For distortion_failure events only: which phase of distortion fired.
+   *   perception — AEIC-filtered view flips the success/failure prediction
+   *   targeting  — perceived best-target differs from actual best-target
+   *   effect     — effect spills/mutates without causal propagation
+   */
+  distortion_phase: z.enum(['perception', 'targeting', 'effect']).optional(),
+  /** Human-readable explanation. */
+  reason: z.string(),
+});
+
+// ---------------------------------------------------------------------------
+// Irreversible event — permanently-changed system state, accumulated across turns
+// ---------------------------------------------------------------------------
+export const IrreversibleEventSchema = z.object({
+  /** What type of irreversible change occurred. */
+  type: z.enum(['node_locked', 'cascade_triggered', 'system_collapsed']),
+  /** The node that was locked (only for node_locked type). */
+  node_id: z.string().optional(),
+  /** The turn on which this change occurred. */
+  turn: z.number(),
   /** Human-readable explanation. */
   reason: z.string(),
 });
@@ -186,6 +207,30 @@ export const TurnLogEntrySchema = z.object({
 
   /** All discrete failure events that fired during this turn. */
   triggered_failures: z.array(TriggeredFailureSchema),
+
+  // -------------------------------------------------------------------------
+  // Distortion detail — which distortion phases fired this turn
+  // -------------------------------------------------------------------------
+
+  /**
+   * The node ID the actor's AEIC would most naturally target (outgoing edge
+   * whose target has the lowest perceived constraint). undefined if no outgoing edges.
+   */
+  perceived_target: z.string().optional(),
+
+  /**
+   * The node ID that is actually the best target (lowest actual constraint).
+   * undefined if no outgoing edges.
+   */
+  actual_target: z.string().optional(),
+
+  /**
+   * Which distortion phases fired this turn.
+   *   perception — AEIC view flipped the success/failure prediction for the primary edge
+   *   targeting  — perceived best-target ≠ actual best-target
+   *   effect     — at least one edge outcome was distortion_failure (spill/mutation)
+   */
+  distortion_phases: z.array(z.enum(['perception', 'targeting', 'effect'])).default([]),
 });
 
 // ---------------------------------------------------------------------------
@@ -201,6 +246,10 @@ export const SimulationStateSchema = z.object({
   /** Full per-turn log with perceived/actual states and failure details. */
   turn_log: z.array(TurnLogEntrySchema).default([]),
   status: z.enum(['active', 'cascade', 'collapsed']),
+  /** Accumulated log of all irreversible state changes (lock, cascade, collapse). */
+  irreversible_events: z.array(IrreversibleEventSchema).default([]),
+  /** Optional human-readable name for session save/load. */
+  label: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -356,6 +405,7 @@ export type SimulationStep = z.infer<typeof SimulationStepSchema>;
 export type PerceivedNodeState = z.infer<typeof PerceivedNodeStateSchema>;
 export type PerceivedSystemState = z.infer<typeof PerceivedSystemStateSchema>;
 export type TriggeredFailure = z.infer<typeof TriggeredFailureSchema>;
+export type IrreversibleEvent = z.infer<typeof IrreversibleEventSchema>;
 export type TurnLogEntry = z.infer<typeof TurnLogEntrySchema>;
 export type SimulationState = z.infer<typeof SimulationStateSchema>;
 export type CreateGraphBody = z.infer<typeof CreateGraphBodySchema>;

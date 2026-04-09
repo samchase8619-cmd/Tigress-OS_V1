@@ -1412,3 +1412,169 @@ body {
   border-radius: 8px;
   padding: 1px 5px;
 }
+
+/* ---------------------------------------------------------------------------
+ * ManualPlay — distortion, irreversible events, session save/load  (new)
+ * --------------------------------------------------------------------------- */
+
+/* Sidebar header with session loader icon */
+.mp-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.mp-btn-sessions {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+}
+.mp-btn-sessions:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* Session loader list */
+.mp-session-list {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 10px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.mp-session-list-title { font-size: 10px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+.mp-session-empty { font-size: 11px; color: var(--text-secondary); text-align: center; padding: 8px 0; }
+.mp-session-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mp-session-item:hover { background: var(--bg-hover); }
+.mp-session-label { font-size: 12px; font-weight: 500; color: var(--text-primary); }
+.mp-session-meta { font-size: 10px; color: var(--text-secondary); }
+
+/* Session save row */
+.mp-save-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.mp-save-input {
+  flex: 1;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  min-width: 0;
+}
+.mp-save-input:focus { outline: none; border-color: var(--accent); }
+.mp-btn-save {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #7c3aed20;
+  border: 1px solid #7c3aed40;
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: #7c3aed;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.mp-btn-save:disabled { opacity: 0.5; cursor: not-allowed; }
+.mp-btn-save:not(:disabled):hover { background: #7c3aed30; }
+
+/* Distortion phase badge (inline in FailureDetail) */
+.mp-distortion-phase-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #fff;
+  border-radius: 8px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+  text-transform: uppercase;
+}
+
+/* Distortion detail panel */
+.mp-distortion-detail {
+  background: rgba(139,92,246,0.06);
+  border: 1px solid rgba(139,92,246,0.2);
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 12px;
+}
+.mp-targeting-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(139,92,246,0.15);
+}
+.mp-targeting-col { display: flex; flex-direction: column; gap: 2px; }
+.mp-targeting-label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
+.mp-targeting-node { font-weight: 600; color: var(--text-primary); }
+.mp-targeting-mismatch { font-size: 10px; color: #f97316; font-weight: 600; }
+.mp-phases-list { display: flex; flex-direction: column; gap: 6px; }
+.mp-phase-row { display: flex; align-items: flex-start; gap: 8px; }
+.mp-phase-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #fff;
+  border-radius: 8px;
+  padding: 2px 7px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+.mp-phase-desc { color: var(--text-secondary); line-height: 1.4; }
+
+/* Irreversible events log */
+.mp-irrev-log {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.mp-irrev-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+.mp-irrev-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  font-size: 11px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.mp-irrev-item:last-child { border-bottom: none; }
+.mp-irrev-icon { font-size: 12px; }
+.mp-irrev-turn { font-size: 10px; color: var(--text-secondary); min-width: 22px; }
+.mp-irrev-desc { color: var(--text-primary); line-height: 1.3; }

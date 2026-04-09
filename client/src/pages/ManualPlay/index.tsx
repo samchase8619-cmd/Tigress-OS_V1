@@ -30,6 +30,9 @@ import {
   FlaskConical,
   Shield,
   Info,
+  Save,
+  FolderOpen,
+  History,
 } from 'lucide-react';
 import type {
   CausalGraph,
@@ -38,6 +41,7 @@ import type {
   NodeDelta,
   EdgeResult,
   TriggeredFailure,
+  IrreversibleEvent,
   StepOutcome,
 } from '../../types';
 import * as api from '../../api/client';
@@ -217,13 +221,28 @@ function PropagationPath({
 
 function FailureDetail({ failures }: { failures: TriggeredFailure[] }) {
   if (failures.length === 0) return null;
+  const phaseColor: Record<string, string> = {
+    perception: '#8b5cf6',
+    targeting:  '#0ea5e9',
+    effect:     '#f97316',
+  };
   return (
     <div className="mp-failures">
       {failures.map((f, i) => (
         <div key={i} className="mp-failure-item">
           <span className="mp-failure-icon">{failureIcon[f.type]}</span>
           <div className="mp-failure-body">
-            <span className="mp-failure-type">{f.type.replace(/_/g, ' ')}</span>
+            <span className="mp-failure-type">
+              {f.type.replace(/_/g, ' ')}
+              {f.distortion_phase && (
+                <span
+                  className="mp-distortion-phase-badge"
+                  style={{ background: phaseColor[f.distortion_phase] ?? '#6b7280' }}
+                >
+                  {f.distortion_phase}
+                </span>
+              )}
+            </span>
             {f.edge_id && <span className="mp-failure-edge">edge: {f.edge_id}</span>}
             <span className="mp-failure-reason">{f.reason}</span>
           </div>
@@ -343,12 +362,108 @@ function PerceivedActualToggle({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Distortion detail sub-component
+// ---------------------------------------------------------------------------
+
+function DistortionDetail({ entry, graph }: { entry: TurnLogEntry; graph: CausalGraph }) {
+  const phases = entry.distortion_phases ?? [];
+  if (phases.length === 0 && !entry.perceived_target) return null;
+
+  const nodeLabel = (id: string | undefined) =>
+    id ? (graph.nodes.find(n => n.id === id)?.label ?? id) : '—';
+
+  const phaseColor: Record<string, string> = {
+    perception: '#8b5cf6',
+    targeting:  '#0ea5e9',
+    effect:     '#f97316',
+  };
+  const phaseDesc: Record<string, string> = {
+    perception: 'AEIC rounding flipped the success/failure prediction for the primary edge',
+    targeting:  'Perceived best-target ≠ actual best-target due to AEIC constraint rounding',
+    effect:     'Action energy absorbed without causal propagation; downstream spill occurred',
+  };
+
+  return (
+    <div className="mp-distortion-detail">
+      {(entry.perceived_target || entry.actual_target) && (
+        <div className="mp-targeting-row">
+          <div className="mp-targeting-col">
+            <span className="mp-targeting-label">Perceived target</span>
+            <span className="mp-targeting-node">{nodeLabel(entry.perceived_target)}</span>
+            {entry.perceived_target && entry.actual_target && entry.perceived_target !== entry.actual_target && (
+              <span className="mp-targeting-mismatch">≠ actual</span>
+            )}
+          </div>
+          <div className="mp-targeting-col">
+            <span className="mp-targeting-label">Actual best target</span>
+            <span className="mp-targeting-node">{nodeLabel(entry.actual_target)}</span>
+          </div>
+        </div>
+      )}
+      {phases.length > 0 && (
+        <div className="mp-phases-list">
+          {phases.map(phase => (
+            <div key={phase} className="mp-phase-row">
+              <span
+                className="mp-phase-badge"
+                style={{ background: phaseColor[phase] }}
+              >
+                {phase.toUpperCase()}
+              </span>
+              <span className="mp-phase-desc">{phaseDesc[phase]}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Irreversible events log sub-component
+// ---------------------------------------------------------------------------
+
+function IrreversibleEventsLog({
+  events,
+  graph,
+}: {
+  events: IrreversibleEvent[];
+  graph: CausalGraph;
+}) {
+  if (events.length === 0) return null;
+
+  const nodeLabel = (id: string | undefined) =>
+    id ? (graph.nodes.find(n => n.id === id)?.label ?? id) : undefined;
+
+  const eventIcon: Record<IrreversibleEvent['type'], string> = {
+    node_locked:       '🔒',
+    cascade_triggered: '⚡',
+    system_collapsed:  '💀',
+  };
+
+  return (
+    <div className="mp-irrev-log">
+      <div className="mp-irrev-title"><History size={13} /> Permanent State Changes</div>
+      {events.map((ev, i) => (
+        <div key={i} className="mp-irrev-item">
+          <span className="mp-irrev-icon">{eventIcon[ev.type]}</span>
+          <span className="mp-irrev-turn">T{ev.turn}</span>
+          <span className="mp-irrev-desc">
+            {ev.type.replace(/_/g, ' ')}
+            {ev.node_id && ` — ${nodeLabel(ev.node_id) ?? ev.node_id}`}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TurnResult({
   entry,
   graph,
   deltas,
-}: {
-  entry: TurnLogEntry;
+}: {  entry: TurnLogEntry;
   graph: CausalGraph;
   deltas: NodeDelta[];
 }) {
@@ -421,6 +536,14 @@ function TurnResult({
         </div>
       )}
 
+      {/* Distortion phase breakdown */}
+      {(entry.distortion_phases ?? []).length > 0 && (
+        <div className="mp-result-section">
+          <div className="mp-result-section-title">Distortion Phases</div>
+          <DistortionDetail entry={entry} graph={graph} />
+        </div>
+      )}
+
       {/* Node state deltas */}
       <div className="mp-result-section">
         <div className="mp-result-section-title">Node State Deltas</div>
@@ -451,9 +574,19 @@ export default function ManualPlay() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Session save / load
+  const [allSessions, setAllSessions] = useState<SimulationState[]>([]);
+  const [saveLabel, setSaveLabel] = useState('');
+  const [savingLabel, setSavingLabel] = useState(false);
+  const [showSessions, setShowSessions] = useState(false);
+
   useEffect(() => {
     api.listGraphs().then(setGraphs).catch(e => setError(String(e)));
+    api.listAllSimulations().then(setAllSessions).catch(() => {/* non-fatal */});
   }, []);
+
+  const refreshSessions = () =>
+    api.listAllSimulations().then(setAllSessions).catch(() => {});
 
   const handleSelectGraph = (g: CausalGraph) => {
     setSelectedGraph(g);
@@ -468,6 +601,35 @@ export default function ManualPlay() {
     setSimState(null);
     setLastEntry(null);
     setLastDeltas([]);
+  };
+
+  const handleSaveSession = async () => {
+    if (!simState || !saveLabel.trim()) return;
+    setSavingLabel(true);
+    try {
+      await api.labelSimulation(simState.id, saveLabel.trim());
+      setSaveLabel('');
+      await refreshSessions();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSavingLabel(false);
+    }
+  };
+
+  const handleLoadSession = async (session: SimulationState) => {
+    try {
+      // Resolve the graph this session was run on
+      const graph = graphs.find(g => g.id === session.graphId) ?? await api.getGraph(session.graphId);
+      setSelectedGraph(graph);
+      setSimState(session);
+      setLastEntry(session.turn_log.at(-1) ?? null);
+      setLastDeltas(session.trace.at(-1)?.node_deltas ?? []);
+      setSelectedSourceId(graph.nodes[0]?.id ?? null);
+      setShowSessions(false);
+    } catch (e) {
+      setError(String(e));
+    }
   };
 
   const handleExecute = async () => {
@@ -504,7 +666,40 @@ export default function ManualPlay() {
     <div className="mp-layout">
       {/* ---- Left column: graph list ---- */}
       <aside className="mp-sidebar">
-        <h2 className="mp-sidebar-title">Graphs</h2>
+        <div className="mp-sidebar-header">
+          <h2 className="mp-sidebar-title">Graphs</h2>
+          <button
+            className="mp-btn-sessions"
+            onClick={() => setShowSessions(s => !s)}
+            title="Load saved session"
+          >
+            <FolderOpen size={14} />
+          </button>
+        </div>
+
+        {/* Session loader */}
+        {showSessions && (
+          <div className="mp-session-list">
+            <div className="mp-session-list-title">Saved Sessions</div>
+            {allSessions.length === 0 && (
+              <p className="mp-session-empty">No saved sessions yet.</p>
+            )}
+            {allSessions.filter(s => s.label).map(s => {
+              const gName = graphs.find(g => g.id === s.graphId)?.name ?? s.graphId;
+              return (
+                <button
+                  key={s.id}
+                  className="mp-session-item"
+                  onClick={() => handleLoadSession(s)}
+                >
+                  <span className="mp-session-label">{s.label}</span>
+                  <span className="mp-session-meta">{gName} · T{s.step}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         <ul className="mp-graph-list">
           {graphs.map(g => (
             <li
@@ -536,6 +731,14 @@ export default function ManualPlay() {
               </div>
             )}
             <div className="mp-sys-step">Turn {simState.step}</div>
+
+            {/* Irreversible events */}
+            {selectedGraph && (simState.irreversible_events ?? []).length > 0 && (
+              <IrreversibleEventsLog
+                events={simState.irreversible_events}
+                graph={selectedGraph}
+              />
+            )}
           </div>
         )}
       </aside>
@@ -658,6 +861,26 @@ export default function ManualPlay() {
                   <RotateCcw size={14} /> Reset
                 </button>
               </div>
+
+              {/* Session save */}
+              {simState && (
+                <div className="mp-save-row">
+                  <input
+                    className="mp-save-input"
+                    placeholder="Session name…"
+                    value={saveLabel}
+                    onChange={e => setSaveLabel(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleSaveSession(); }}
+                  />
+                  <button
+                    className="mp-btn-save"
+                    onClick={handleSaveSession}
+                    disabled={savingLabel || !saveLabel.trim()}
+                  >
+                    <Save size={13} /> {savingLabel ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              )}
             </section>
           </>
         ) : (

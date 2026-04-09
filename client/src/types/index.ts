@@ -127,6 +127,21 @@ export interface TriggeredFailure {
   type: 'propagation_failure' | 'correction_failure' | 'distortion_failure' | 'cascade' | 'collapse';
   edge_id?: string;
   target_node_id?: string;
+  /**
+   * For distortion_failure events only: which phase of distortion fired.
+   *   perception — AEIC view flips success/failure prediction
+   *   targeting  — perceived best-target ≠ actual best-target
+   *   effect     — spill/mutation without causal propagation
+   */
+  distortion_phase?: 'perception' | 'targeting' | 'effect';
+  reason: string;
+}
+
+/** A permanently-changed system state, accumulated across turns. */
+export interface IrreversibleEvent {
+  type: 'node_locked' | 'cascade_triggered' | 'system_collapsed';
+  node_id?: string;
+  turn: number;
   reason: string;
 }
 
@@ -166,6 +181,14 @@ export interface TurnLogEntry {
 
   /** All discrete failure events that fired during this turn. */
   triggered_failures: TriggeredFailure[];
+
+  // Distortion detail
+  /** The node ID the actor's AEIC would most naturally target. */
+  perceived_target?: string;
+  /** The node ID that is actually the best target (lowest actual constraint). */
+  actual_target?: string;
+  /** Which distortion phases fired this turn. */
+  distortion_phases: Array<'perception' | 'targeting' | 'effect'>;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +203,10 @@ export interface SimulationState {
   trace: SimulationStep[];
   turn_log: TurnLogEntry[];
   status: 'active' | 'cascade' | 'collapsed';
+  /** Accumulated log of all irreversible state changes. */
+  irreversible_events: IrreversibleEvent[];
+  /** Optional human-readable save label. */
+  label?: string;
   createdAt: string;
   updatedAt: string;
 }
