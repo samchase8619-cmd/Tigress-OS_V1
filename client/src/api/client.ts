@@ -1,4 +1,4 @@
-import type { CausalGraph, SimulationState, TurnLogEntry, ResearchSession } from '../types';
+import type { CausalGraph, SimulationState, TurnLogEntry, ResearchSession, TestCasesResponse } from '../types';
 
 const BASE = '/api';
 
@@ -44,6 +44,8 @@ export const deleteSimulation = (id: string) =>
   request<void>(`/simulation/simulations/${id}`, { method: 'DELETE' });
 export const getTurnLog = (simId: string) =>
   request<TurnLogEntry[]>(`/simulation/simulations/${simId}/turn_log`);
+export const runTestCases = () =>
+  request<TestCasesResponse>('/simulation/test-case', { method: 'POST' });
 
 // Sessions
 export const listSessions = () => request<ResearchSession[]>('/research/sessions');

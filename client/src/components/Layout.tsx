@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
 import { ReactNode } from 'react';
-import { Cpu, FlaskConical } from 'lucide-react';
+import { Cpu, FlaskConical, Gamepad2 } from 'lucide-react';
 
 interface LayoutProps {
   children: ReactNode;
@@ -23,6 +23,13 @@ export default function Layout({ children }: LayoutProps) {
           >
             <Cpu size={16} />
             Simulation Engine
+          </Link>
+          <Link
+            to="/manual-play"
+            className={`nav-link ${location.pathname === '/manual-play' ? 'active' : ''}`}
+          >
+            <Gamepad2 size={16} />
+            Manual Play
           </Link>
           <Link
             to="/research"

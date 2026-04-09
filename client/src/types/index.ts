@@ -185,6 +185,58 @@ export interface SimulationState {
 }
 
 // ---------------------------------------------------------------------------
+// Test-case types
+// ---------------------------------------------------------------------------
+
+export interface TestCaseNodeSetup {
+  id: string;
+  label: string;
+  role: 'source' | 'target' | 'background' | 'downstream';
+  constraint_level: number;
+  actor_leverage: number;
+  locked: boolean;
+}
+
+export interface TestCaseSetup {
+  nodes: TestCaseNodeSetup[];
+  edges: Array<{
+    id: string;
+    source: string;
+    target: string;
+    propagation_cost: number;
+    openness: number;
+  }>;
+  system_pressure: number;
+  recovery_capacity: number;
+  actor_leverage_used: number;
+  why_this_fails: string;
+  expected_outcome: 'propagation_failure' | 'correction_failure' | 'distortion_failure';
+}
+
+export interface TestCaseCauseExplanation {
+  formula_breakdown: string;
+  labeled_cause: string;
+  aeic_discrepancy: string | null;
+  recovery_note: string;
+}
+
+export interface TestCaseResult {
+  case_id: 'propagation_failure' | 'correction_failure' | 'distortion_failure';
+  description: string;
+  setup: TestCaseSetup;
+  turn_log: TurnLogEntry[];
+  failure_flag: boolean;
+  actual_outcome: string;
+  cause_explanation: TestCaseCauseExplanation;
+}
+
+export interface TestCasesResponse {
+  generated_at: string;
+  rng_mode: 'deterministic';
+  cases: TestCaseResult[];
+}
+
+// ---------------------------------------------------------------------------
 // Research / chat
 // ---------------------------------------------------------------------------
 export interface Message {

@@ -242,6 +242,78 @@ export const SimulateBodySchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Test-case result types
+// ---------------------------------------------------------------------------
+
+/** A single node's initial conditions as used in a test case. */
+export const TestCaseNodeSetupSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  role: z.enum(['source', 'target', 'background', 'downstream']),
+  constraint_level: z.number(),
+  actor_leverage: z.number(),
+  locked: z.boolean(),
+});
+
+/** The initial conditions of a test case, with labelled explanation. */
+export const TestCaseSetupSchema = z.object({
+  nodes: z.array(TestCaseNodeSetupSchema),
+  edges: z.array(z.object({
+    id: z.string(),
+    source: z.string(),
+    target: z.string(),
+    propagation_cost: z.number(),
+    openness: z.number(),
+  })),
+  system_pressure: z.number(),
+  recovery_capacity: z.number(),
+  actor_leverage_used: z.number(),
+  /** Explicit formula breakdown for why this case produces its failure mode. */
+  why_this_fails: z.string(),
+  /** Expected outcome from the engine. */
+  expected_outcome: z.enum([
+    'propagation_failure',
+    'correction_failure',
+    'distortion_failure',
+  ]),
+});
+
+/** Labeled cause breakdown returned per test case. */
+export const TestCaseCauseExplanationSchema = z.object({
+  /** Step-by-step potential formula breakdown. */
+  formula_breakdown: z.string(),
+  /** The specific structural or statistical reason the failure fired. */
+  labeled_cause: z.string(),
+  /** How AEIC perception differed from actual (or null if no discrepancy). */
+  aeic_discrepancy: z.string().nullable(),
+  /** What would have been needed to succeed. */
+  recovery_note: z.string(),
+});
+
+export const TestCaseResultSchema = z.object({
+  case_id: z.enum([
+    'propagation_failure',
+    'correction_failure',
+    'distortion_failure',
+  ]),
+  description: z.string(),
+  setup: TestCaseSetupSchema,
+  /** Full turn log produced by the engine for this case (unsummarised). */
+  turn_log: z.array(TurnLogEntrySchema),
+  /** True if the engine produced the expected failure outcome. */
+  failure_flag: z.boolean(),
+  /** The actual outcome produced by the engine. */
+  actual_outcome: z.string(),
+  cause_explanation: TestCaseCauseExplanationSchema,
+});
+
+export const TestCasesResponseSchema = z.object({
+  generated_at: z.string(),
+  rng_mode: z.literal('deterministic'),
+  cases: z.array(TestCaseResultSchema),
+});
+
+// ---------------------------------------------------------------------------
 // Research / chat
 // ---------------------------------------------------------------------------
 export const MessageSchema = z.object({
@@ -289,6 +361,11 @@ export type SimulationState = z.infer<typeof SimulationStateSchema>;
 export type CreateGraphBody = z.infer<typeof CreateGraphBodySchema>;
 export type UpdateGraphBody = z.infer<typeof UpdateGraphBodySchema>;
 export type SimulateBody = z.infer<typeof SimulateBodySchema>;
+export type TestCaseNodeSetup = z.infer<typeof TestCaseNodeSetupSchema>;
+export type TestCaseSetup = z.infer<typeof TestCaseSetupSchema>;
+export type TestCaseCauseExplanation = z.infer<typeof TestCaseCauseExplanationSchema>;
+export type TestCaseResult = z.infer<typeof TestCaseResultSchema>;
+export type TestCasesResponse = z.infer<typeof TestCasesResponseSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type ResearchSession = z.infer<typeof ResearchSessionSchema>;
 export type CreateSessionBody = z.infer<typeof CreateSessionBodySchema>;
