@@ -17,26 +17,39 @@ export function ensureDir(): void {
   }
 }
 
-/** Reject any id that is not a safe alphanumeric/hyphen/underscore string (e.g. UUID). */
-function safeId(id: string): string {
+/**
+ * Resolve a file path for the given subdir + id, and verify it stays
+ * within the expected base directory (prevents path-traversal attacks).
+ * Also requires id to be alphanumeric/hyphen/underscore (UUID-safe).
+ */
+function resolveFilePath(subdir: string, id: string): string {
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
     throw new Error(`Invalid id: ${id}`);
   }
-  return id;
+  const base = path.resolve(STORAGE_PATH, subdir);
+  const resolved = path.resolve(base, `${id}.json`);
+  if (!resolved.startsWith(base + path.sep)) {
+    throw new Error('Path traversal detected');
+  }
+  return resolved;
 }
 
 export function readAll<T>(subdir: string): T[] {
-  const dirPath = path.join(STORAGE_PATH, subdir);
+  const dirPath = path.resolve(STORAGE_PATH, subdir);
   if (!fs.existsSync(dirPath)) return [];
   const files = fs.readdirSync(dirPath).filter(f => f.endsWith('.json'));
   return files.map(f => {
-    const content = fs.readFileSync(path.join(dirPath, f), 'utf-8');
+    // f comes from readdirSync — only read files that end with .json and contain no separators
+    if (f.includes(path.sep) || f.includes('/')) return null;
+    const filePath = path.resolve(dirPath, f);
+    if (!filePath.startsWith(dirPath + path.sep)) return null;
+    const content = fs.readFileSync(filePath, 'utf-8');
     return JSON.parse(content) as T;
-  });
+  }).filter((item): item is T => item !== null);
 }
 
 export function readOne<T>(subdir: string, id: string): T | null {
-  const filePath = path.join(STORAGE_PATH, subdir, `${safeId(id)}.json`);
+  const filePath = resolveFilePath(subdir, id);
   if (!fs.existsSync(filePath)) return null;
   const content = fs.readFileSync(filePath, 'utf-8');
   return JSON.parse(content) as T;
@@ -44,12 +57,12 @@ export function readOne<T>(subdir: string, id: string): T | null {
 
 export function writeOne(subdir: string, id: string, data: unknown): void {
   ensureDir();
-  const filePath = path.join(STORAGE_PATH, subdir, `${safeId(id)}.json`);
+  const filePath = resolveFilePath(subdir, id);
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 export function deleteOne(subdir: string, id: string): void {
-  const filePath = path.join(STORAGE_PATH, subdir, `${safeId(id)}.json`);
+  const filePath = resolveFilePath(subdir, id);
   if (fs.existsSync(filePath)) {
     fs.unlinkSync(filePath);
   }
