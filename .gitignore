@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+server/data/*.json
+server/data/**/*.json
+!server/data/.gitkeep
+!server/data/graphs/.gitkeep
+!server/data/simulations/.gitkeep
+!server/data/sessions/.gitkeep
+*.log
+.DS_Store
